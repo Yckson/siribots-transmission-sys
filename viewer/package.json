@@ -1,0 +1,22 @@
+{
+  "name": "siribots-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "expo": "~50.0.0",
+    "expo-dev-client": "~3.3.12",
+    "expo-splash-screen": "~0.26.5",
+    "react": "18.2.0",
+    "react-native": "0.73.6",
+    "react-native-udp": "^4.1.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0"
+  }
+}

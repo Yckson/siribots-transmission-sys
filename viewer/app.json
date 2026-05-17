@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Siribots Viewer",
+    "slug": "siribots-viewer",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "platforms": [
+      "android",
+      "ios"
+    ],
+    "sdkVersion": "50.0.0",
+    "jsEngine": "hermes",
+    "splash": {
+      "backgroundColor": "#111827"
+    },
+    "android": {
+      "package": "com.coretech.siribots"
+    },
+    "ios": {
+      "bundleIdentifier": "com.coretech.siribots"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#111827"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7a67228b-e7e5-4162-b15d-128e871ccb88"
+      }
+    }
+  }
+}
