@@ -79,3 +79,11 @@ Fase 5: Refinamentos (Futuro)
 Múltiplas Salas: Permitir que o Hub gerencie várias Fontes diferentes, enviando uma lista de "Câmeras Disponíveis" para o Aplicativo Cliente escolher.
 
 Segurança Básica: Adicionar uma camada de handshake simples para evitar conexões indesejadas na rede local.
+
+Cores do aplicativo:
+
+primary: #ff914d
+secondary: #7c442d
+text: #ecf2f8
+background: #020e1d
+accent: #a48990
