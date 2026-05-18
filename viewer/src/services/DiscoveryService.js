@@ -2,8 +2,9 @@ import dgram from "react-native-udp";
 import {
   DISCOVER_VIEWER,
   DISCOVERY_TIMEOUT_MS,
+  HLS_PATH_FALLBACK,
+  HLS_PORT_FALLBACK,
   UDP_PORT_VIEWER,
-  WS_PORT_FALLBACK,
 } from "../config/constants";
 
 class DiscoveryService {
@@ -74,12 +75,14 @@ class DiscoveryService {
         clearTimeout(this.timeoutId);
         const payload = msg.toString("utf8");
         let hubIp = null;
-        let wsPort = WS_PORT_FALLBACK;
+        let hlsPort = HLS_PORT_FALLBACK;
+        let hlsPath = HLS_PATH_FALLBACK;
 
         try {
           const data = JSON.parse(payload);
           hubIp = data.hubIp;
-          wsPort = data.wsPort || WS_PORT_FALLBACK;
+          hlsPort = data.hlsPort || HLS_PORT_FALLBACK;
+          hlsPath = data.hlsPath || HLS_PATH_FALLBACK;
         } catch (err) {
           hubIp = payload.trim();
         }
@@ -89,7 +92,7 @@ class DiscoveryService {
           return;
         }
 
-        resolve({ hubIp, wsPort });
+        resolve({ hubIp, hlsPort, hlsPath });
         safeClose();
       });
 

@@ -1,6 +1,9 @@
 export const createConnectionState = () => ({
   status: "Aguardando conexao...",
   hubIp: null,
-  wsPort: null,
-  connected: false,
+  hlsUrl: null,
+  isLive: false,
+  showVideo: false,
+  checking: false,
+  lastError: null,
 });

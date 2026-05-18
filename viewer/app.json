@@ -14,7 +14,8 @@
       "backgroundColor": "#111827"
     },
     "android": {
-      "package": "com.coretech.siribots"
+      "package": "com.coretech.siribots",
+      "usesCleartextTraffic": true
     },
     "ios": {
       "bundleIdentifier": "com.coretech.siribots"
