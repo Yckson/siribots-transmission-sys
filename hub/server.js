@@ -16,6 +16,7 @@ const WS_PORT = 42000;
 const HTTP_PORT = Number.parseInt(process.env.HLS_HTTP_PORT || "43000", 10);
 const WAITING_INTERVAL_MS = 1000;
 const WAITING_TIMEOUT_MS = 5000;
+const MAX_INPUT_BUFFER_BYTES = Number.parseInt(process.env.MAX_INPUT_BUFFER_BYTES || "2097152", 10);
 const HLS_DIR = path.join(__dirname, "hls");
 const HLS_PLAYLIST = "stream.m3u8";
 const HLS_SEGMENT_PATTERN = "segment_%03d.ts";
@@ -177,7 +178,7 @@ app.get("/status", (req, res) => {
   const sourceStale = now - lastSourceFrameAt > WAITING_TIMEOUT_MS;
   const isLive = Boolean(activeSource) && !sourceStale;
   const payload = { status: isLive ? "live" : "waiting" };
-  console.log(`[${new Date().toISOString()}] /status`, payload);
+  //console.log(`[${new Date().toISOString()}] /status`, payload);
   res.json(payload);
 });
 
@@ -236,27 +237,31 @@ function buildFfmpegArgs() {
 
   return [
     "-hide_banner",
-    "-loglevel",
-    "warning",
-    "-fflags",
-    "nobuffer+genpts",
-    "-analyzeduration", "1000000", // Acelera a leitura do pipe
+    "-loglevel", "info",
+    "-fflags", "nobuffer+genpts",
+    "-flags", "low_delay",
+    "-use_wallclock_as_timestamps", "1",
+    "-analyzeduration", "1000000", 
     "-probesize", "1000000",
-    "-f",
-    HLS_INPUT_FORMAT,
-    "-i",
-    "pipe:0",
-    "-c:v",
-    "copy",
+    "-f", "mjpeg", // <-- Espera receber o fluxo leve da Odroid
+    "-i", "pipe:0",
+    
+    // --- INÍCIO DA CONVERSÃO PESADA (FEITA PELO PC) ---
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-profile:v", "baseline", // Compatibilidade com celular
+    "-pix_fmt", "yuv420p",
+    "-g", `${HLS_GOP}`,
+    "-keyint_min", `${HLS_GOP}`,
+    "-sc_threshold", "0",
+    // --- FIM DA CONVERSÃO PESADA ---
+
     "-an",
-    "-hls_time",
-    `${HLS_TIME_SECONDS}`,
-    "-hls_list_size",
-    `${HLS_LIST_SIZE}`,
-    "-hls_flags",
-    "delete_segments+temp_file", // Flags corrigidas (sem append_list e split_by_time)
-    "-hls_segment_filename",
-    segmentPath,
+    "-hls_time", `${HLS_TIME_SECONDS}`,
+    "-hls_list_size", `${HLS_LIST_SIZE}`,
+    "-hls_flags", "delete_segments+temp_file",
+    "-hls_segment_filename", segmentPath,
     playlistPath,
   ];
 }
@@ -352,6 +357,9 @@ wss.on("connection", (ws, req) => {
       lastSourceFrameAt = Date.now();
       startFfmpeg();
       if (ffmpegProcess?.stdin?.writable) {
+        if (ffmpegProcess.stdin.writableLength > MAX_INPUT_BUFFER_BYTES) {
+          return;
+        }
         ffmpegProcess.stdin.write(data);
       }
     }
