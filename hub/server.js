@@ -29,35 +29,25 @@ const HLS_GOP = Math.max(1, Math.round(HLS_FPS * HLS_TIME_SECONDS));
 const HLS_WAITING_SIZE = (process.env.HLS_WAITING_SIZE || "640x480").trim();
 const HLS_WAITING_FPS = Number.parseInt(process.env.HLS_WAITING_FPS || "30", 10);
 
-function getLocalIp() {
+function getIpFacingClient(clientIp) {
   const interfaces = os.networkInterfaces();
-  const gatewayIp = (process.env.GATEWAY_IP || "").trim();
-
-  if (!gatewayIp) {
-    console.warn("GATEWAY_IP not set in .env, falling back to 127.0.0.1");
-    return "127.0.0.1";
-  }
-
-  const gatewayParts = gatewayIp.split(".");
-  if (gatewayParts.length !== 4) {
-    console.warn("GATEWAY_IP format invalid, falling back to 127.0.0.1");
-    return "127.0.0.1";
-  }
-
-  const gatewayPrefix = gatewayParts.slice(0, 3).join(".");
+  const ipToInt = (ip) => ip.split('.').reduce((int, oct) => (int << 8) + parseInt(oct, 10), 0) >>> 0;
+  
+  const clientInt = ipToInt(clientIp);
 
   for (const name of Object.keys(interfaces)) {
     for (const net of interfaces[name]) {
       if (net.family === "IPv4" && !net.internal) {
-        const ipPrefix = net.address.split(".").slice(0, 3).join(".");
-        if (ipPrefix === gatewayPrefix) {
+        const netInt = ipToInt(net.address);
+        const maskInt = ipToInt(net.netmask);
+        if ((clientInt & maskInt) === (netInt & maskInt)) {
           return net.address;
         }
       }
     }
   }
 
-  console.warn("No IPv4 match for GATEWAY_IP subnet, falling back to 127.0.0.1");
+  console.warn(`Nenhuma interface de rede no Hub compartilha a subnet com ${clientIp}. Caindo para 127.0.0.1`);
   return "127.0.0.1";
 }
 
@@ -72,8 +62,10 @@ function createUdpListener(port, role) {
       return;
     }
 
+    const bestHubIp = getIpFacingClient(rinfo.address);
+
     const response = JSON.stringify({
-      hubIp: getLocalIp(),
+      hubIp: bestHubIp,
       wsPort: WS_PORT,
       hlsPort: HTTP_PORT,
       hlsPath: `/${HLS_PLAYLIST}`,
@@ -82,7 +74,7 @@ function createUdpListener(port, role) {
 
     socket.send(response, rinfo.port, rinfo.address);
     const now = new Date().toISOString();
-    console.log(`[${now}] ${role} discovery from ${rinfo.address}:${rinfo.port}`);
+    console.log(`[${now}] ${role} discovery from ${rinfo.address}:${rinfo.port}. Respondendo com IP do Hub: ${bestHubIp}`);
   });
 
   socket.bind(port, () => {
@@ -93,6 +85,7 @@ function createUdpListener(port, role) {
 }
 
 const sourceListener = createUdpListener(UDP_PORT_SOURCE, "source");
+// Mantemos o listener UDP Viewer caso o app mobile ainda o utilize para achar o IP do painel via rede.
 const viewerListener = createUdpListener(UDP_PORT_VIEWER, "viewer");
 
 function ensureHlsDir() {
@@ -114,10 +107,136 @@ function clearHlsDir() {
 
 const app = express();
 
+// --- MIDDLEWARES ---
+// Middleware de Segurança: Bloqueia acesso à rota de admin para IPs externos
+function adminOnly(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  // Express lida com IPv4 mapeado em IPv6 (::ffff:127.0.0.1) ou localhost puro
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
+    next();
+  } else {
+    console.log(`Tentativa de acesso bloqueada ao /admin vinda de ${ip}`);
+    res.status(403).send("<h1>403 Proibido</h1><p>A área de administração só pode ser acessada pelo computador local (Hub).</p>");
+  }
+}
+
+// --- ROTAS WEB HTML ---
+
+// Rota 1: Página do Viewer (Pública)
+app.get("/", (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Siribots - Visualizador Ao Vivo</title>
+      <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+      <style>
+        body { margin: 0; padding: 0; background-color: #000; display: flex; flex-direction: column; height: 100vh; align-items: center; justify-content: center; font-family: sans-serif; color: white;}
+        video { width: 100%; max-width: 1280px; height: auto; background-color: #111; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .header { position: absolute; top: 15px; left: 15px; background: rgba(0,0,0,0.6); padding: 5px 15px; border-radius: 5px; }
+        .live-badge { color: red; font-weight: bold; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h3>Siribots <span class="live-badge">● AO VIVO</span></h3>
+      </div>
+      <video id="video" controls autoplay muted playsinline></video>
+      <script>
+        const video = document.getElementById('video');
+        const videoSrc = '/stream.m3u8';
+        
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 5,
+            enableWorker: true
+          });
+          hls.loadSource(videoSrc);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            video.play().catch(e => console.log("Auto-play prevenido pelo navegador."));
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = videoSrc;
+          video.addEventListener('loadedmetadata', function() {
+            video.play();
+          });
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Rota 2: Página de Admin (Restrita ao Localhost)
+app.get("/admin", adminOnly, (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Siribots - Painel de Controle</title>
+      <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px; }
+        .card { background: white; max-width: 600px; margin: 0 auto; padding: 30px; border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,0.05); }
+        h1 { color: #2c3e50; margin-top: 0; }
+        .status-box { padding: 15px; border-radius: 6px; margin-bottom: 15px; font-weight: bold; }
+        .status-live { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .status-waiting { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .btn { display: inline-block; background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+        .btn:hover { background: #2980b9; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Painel Hub - Siribots</h1>
+        <p>Bem-vindo ao painel administrativo local.</p>
+        
+        <h3>Status da Transmissão (Odroid):</h3>
+        <div id="status-container" class="status-box status-waiting">
+          Verificando conexão da placa fonte...
+        </div>
+
+        <a href="/" target="_blank" class="btn">Abrir Visualizador do Robô</a>
+      </div>
+
+      <script>
+        async function fetchStatus() {
+          try {
+            const response = await fetch('/status');
+            const data = await response.json();
+            const container = document.getElementById('status-container');
+            
+            if (data.status === 'live') {
+              container.className = 'status-box status-live';
+              container.innerHTML = '🟢 SINAL ATIVO - A placa Odroid está transmitindo vídeo.';
+            } else {
+              container.className = 'status-box status-waiting';
+              container.innerHTML = '🔴 AGUARDANDO SINAL - Nenhuma transmissão ativa no momento.';
+            }
+          } catch (e) {
+            console.error('Erro ao buscar status');
+          }
+        }
+        
+        // Atualiza a cada 2 segundos
+        setInterval(fetchStatus, 2000);
+        fetchStatus();
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// --- FIM ROTAS WEB ---
+
 function buildWaitingPlaylist() {
   const targetDuration = Math.max(1, Math.ceil(HLS_TIME_SECONDS));
-  
-  // Simula uma sequência contínua baseada no tempo real para o player não desistir
   const seq = Math.floor(Date.now() / 1000 / targetDuration) % 1000;
 
   return [
@@ -125,7 +244,7 @@ function buildWaitingPlaylist() {
     "#EXT-X-VERSION:3",
     "#EXT-X-ALLOW-CACHE:NO",
     `#EXT-X-TARGETDURATION:${targetDuration}`,
-    `#EXT-X-MEDIA-SEQUENCE:${seq}`, // Sequência dinâmica!
+    `#EXT-X-MEDIA-SEQUENCE:${seq}`,
     `#EXTINF:${targetDuration.toFixed(3)},`,
     WAITING_SEGMENT,
   ].join("\n");
@@ -140,24 +259,15 @@ function ensureWaitingSegment() {
   ensureHlsDir();
   const args = [
     "-hide_banner",
-    "-loglevel",
-    "warning",
-    "-f",
-    "lavfi",
-    "-i",
-    `color=c=black:s=${HLS_WAITING_SIZE}:r=${HLS_WAITING_FPS}`,
-    "-t",
-    "1",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "ultrafast",
-    "-tune",
-    "zerolatency",
-    "-pix_fmt",
-    "yuv420p",
-    "-f",
-    "mpegts",
+    "-loglevel", "warning",
+    "-f", "lavfi",
+    "-i", `color=c=black:s=${HLS_WAITING_SIZE}:r=${HLS_WAITING_FPS}`,
+    "-t", "1",
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-pix_fmt", "yuv420p",
+    "-f", "mpegts",
     segmentPath,
   ];
 
@@ -178,7 +288,6 @@ app.get("/status", (req, res) => {
   const sourceStale = now - lastSourceFrameAt > WAITING_TIMEOUT_MS;
   const isLive = Boolean(activeSource) && !sourceStale;
   const payload = { status: isLive ? "live" : "waiting" };
-  //console.log(`[${new Date().toISOString()}] /status`, payload);
   res.json(payload);
 });
 
@@ -206,6 +315,8 @@ app.get(`/${HLS_PLAYLIST}`, (req, res) => {
   res.send(buildWaitingPlaylist());
 });
 
+// Middleware para servir os arquivos HLS (.ts e .m3u8).
+// É carregado após as rotas HTML para não dar conflito com o '/'
 app.use(
   "/",
   express.static(HLS_DIR, {
@@ -220,11 +331,13 @@ app.use(
 );
 
 const httpServer = app.listen(HTTP_PORT, "0.0.0.0", () => {
-  console.log(`HTTP HLS server listening on :${HTTP_PORT}`);
+  console.log(`Servidor Web/HLS iniciado na porta :${HTTP_PORT}`);
+  console.log(`-> Painel do Robô: http://localhost:${HTTP_PORT}`);
+  console.log(`-> Admin (Restrito): http://127.0.0.1:${HTTP_PORT}/admin`);
 });
 
 const wss = new WebSocket.Server({ port: WS_PORT }, () => {
-  console.log(`WebSocket server listening on :${WS_PORT}`);
+  console.log(`WebSocket server apenas para Fonte iniciado na porta :${WS_PORT}`);
 });
 
 let activeSource = null;
@@ -237,26 +350,22 @@ function buildFfmpegArgs() {
 
   return [
     "-hide_banner",
-    "-loglevel", "info",
+    "-loglevel", "warning",
     "-fflags", "nobuffer+genpts",
     "-flags", "low_delay",
     "-use_wallclock_as_timestamps", "1",
     "-analyzeduration", "1000000", 
     "-probesize", "1000000",
-    "-f", "mjpeg", // <-- Espera receber o fluxo leve da Odroid
+    "-f", "mjpeg", 
     "-i", "pipe:0",
-    
-    // --- INÍCIO DA CONVERSÃO PESADA (FEITA PELO PC) ---
     "-c:v", "libx264",
     "-preset", "ultrafast",
     "-tune", "zerolatency",
-    "-profile:v", "baseline", // Compatibilidade com celular
+    "-profile:v", "baseline",
     "-pix_fmt", "yuv420p",
     "-g", `${HLS_GOP}`,
     "-keyint_min", `${HLS_GOP}`,
     "-sc_threshold", "0",
-    // --- FIM DA CONVERSÃO PESADA ---
-
     "-an",
     "-hls_time", `${HLS_TIME_SECONDS}`,
     "-hls_list_size", `${HLS_LIST_SIZE}`,
@@ -267,9 +376,7 @@ function buildFfmpegArgs() {
 }
 
 function startFfmpeg() {
-  if (ffmpegProcess) {
-    return;
-  }
+  if (ffmpegProcess) return;
 
   clearHlsDir();
   const args = buildFfmpegArgs();
@@ -280,9 +387,7 @@ function startFfmpeg() {
 
   ffmpegProcess.stderr.on("data", (chunk) => {
     const text = chunk.toString("utf8").trim();
-    if (text) {
-      console.log(`[FFmpeg] ${text}`);
-    }
+    if (text) console.log(`[FFmpeg] ${text}`);
   });
 
   ffmpegProcess.on("close", (code, signal) => {
@@ -297,10 +402,7 @@ function startFfmpeg() {
 }
 
 function stopFfmpeg() {
-  if (!ffmpegProcess) {
-    return;
-  }
-
+  if (!ffmpegProcess) return;
   ffmpegProcess.stdin.end();
   ffmpegProcess.kill("SIGINT");
   ffmpegProcess = null;
@@ -315,14 +417,12 @@ setInterval(() => {
 }, WAITING_INTERVAL_MS);
 
 wss.on("connection", (ws, req) => {
-  const now = new Date().toISOString();
   const remote = req.socket.remoteAddress || "unknown";
-  let role = "unknown";
-
-  console.log(`[${now}] WS connection from ${remote}`);
+  console.log(`[${new Date().toISOString()}] Nova tentativa de conexão WS vinda de ${remote}`);
 
   ws.on("message", (data, isBinary) => {
-    if (role === "unknown" && !isBinary) {
+    // Se for texto (handshake)
+    if (!isBinary) {
       let payload;
       try {
         payload = JSON.parse(data.toString("utf8"));
@@ -332,20 +432,19 @@ wss.on("connection", (ws, req) => {
       }
 
       if (payload?.role === "source") {
-        role = "source";
         if (activeSource && activeSource !== ws) {
           activeSource.close(1012, "Replaced by new source");
         }
         activeSource = ws;
         lastSourceFrameAt = Date.now();
-        console.log(`[${new Date().toISOString()}] Source connected from ${remote}`);
+        console.log(`[${new Date().toISOString()}] ✅ Placa FONTE (Odroid) autorizada a transmitir a partir de ${remote}`);
         return;
       }
 
+      // Rejeita qualquer viewer pelo WebSocket
       if (payload?.role === "viewer") {
-        role = "viewer";
-        console.log(`[${new Date().toISOString()}] Viewer attempted WS from ${remote}`);
-        ws.close(1008, "HLS only");
+        console.warn(`[${new Date().toISOString()}] ❌ Conexão WebSocket Viewer rejeitada. O visualizador usa apenas HTTP agora.`);
+        ws.close(1008, "Viewer websockets unsupported. Please use HTTP Web Viewer.");
         return;
       }
 
@@ -353,12 +452,13 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    if (role === "source" && isBinary) {
+    // Se for binário, é o vídeo chegando da Odroid
+    if (ws === activeSource && isBinary) {
       lastSourceFrameAt = Date.now();
       startFfmpeg();
       if (ffmpegProcess?.stdin?.writable) {
         if (ffmpegProcess.stdin.writableLength > MAX_INPUT_BUFFER_BYTES) {
-          return;
+          return; // Prevenção de gargalo
         }
         ffmpegProcess.stdin.write(data);
       }
@@ -366,17 +466,10 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    const closedAt = new Date().toISOString();
-    if (role === "viewer") {
-      console.log(`[${closedAt}] Viewer disconnected from ${remote}`);
-    } else if (role === "source") {
-      if (activeSource === ws) {
-        activeSource = null;
-      }
+    if (activeSource === ws) {
+      activeSource = null;
       stopFfmpeg();
-      console.log(`[${closedAt}] Source disconnected from ${remote}`);
-    } else {
-      console.log(`[${closedAt}] WS disconnected from ${remote}`);
+      console.log(`[${new Date().toISOString()}] 🔌 Fonte desconectada de ${remote}`);
     }
   });
 });
