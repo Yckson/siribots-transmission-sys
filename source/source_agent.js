@@ -8,6 +8,7 @@ const UDP_PORT_SOURCE = 41001;
 const WS_PORT_FALLBACK = 42000;
 const DISCOVERY_TIMEOUT_MS = 5000;
 const RETRY_DELAY_MS = 2000;
+const MAX_WS_BUFFER_BYTES = Number.parseInt(process.env.MAX_WS_BUFFER_BYTES || "2097152", 10);
 
 const HUB_IP_ENV = (process.env.HUB_IP || "").trim();
 const HUB_WS_PORT_ENV = Number(process.env.HUB_WS_PORT || "");
@@ -164,37 +165,18 @@ function buildFfmpegArgs() {
     ];
   }
 
-  return [
-    "-f",
-    "v4l2",
-    "-video_size",
-    VIDEO_SIZE,
-    "-framerate",
-    FRAME_RATE,
-    "-i",
-    VIDEO_DEVICE,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "ultrafast",
-    "-tune",
-    "zerolatency",
-    "-g",
-    `${GOP_SIZE}`,
-    "-keyint_min",
-    `${GOP_SIZE}`,
-    "-sc_threshold",
-    "0",
-    "-bf",
-    "0",
-    "-muxdelay",
-    "0",
-    "-muxpreload",
-    "0",
-    "-flush_packets",
-    "1",
-    "-f",
-    "mpegts",
+  // === BLOCO DO LINUX / ODROID (Modo Pass-through / Peso Zero) ===
+ return [
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-use_wallclock_as_timestamps", "1",
+    "-f", "v4l2",
+    "-input_format", "mjpeg",
+    "-video_size", VIDEO_SIZE,
+    "-framerate", FRAME_RATE,
+    "-i", VIDEO_DEVICE,
+    "-c:v", "copy",               // Mantém a CPU em 0%, enviando o MJPEG cru para o PC
+    "-f", "mjpeg",
     "-",
   ];
 }
@@ -243,10 +225,16 @@ function streamToHub({ hubIp, wsPort }) {
     };
 
     ws.on("open", () => {
+      if (ws._socket && typeof ws._socket.setNoDelay === "function") {
+        ws._socket.setNoDelay(true);
+      }
       ws.send(JSON.stringify({ role: "source" }));
       try {
         ffmpeg = startFfmpeg((chunk) => {
           if (ws.readyState === WebSocket.OPEN) {
+            if (ws.bufferedAmount > MAX_WS_BUFFER_BYTES) {
+              return;
+            }
             ws.send(chunk, { binary: true });
           }
         });
