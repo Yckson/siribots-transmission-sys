@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gerenciador de Torneio - Coretech</title>
+  
+  <!-- Bibliotecas Locais para funcionamento Offline -->
+  <script src="./libs/react.production.min.js"></script>
+  <script src="./libs/react-dom.production.min.js"></script>
+  <script src="./libs/babel.min.js"></script>
+  <script src="./libs/tailwindcss.js"></script>
+  <script src="./libs/html2canvas.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#ff914d",
+            secondary: "#7c442d",
+            text: "#ecf2f8",
+            background: "#020e1d",
+            accent: "#a48990",
+            card: "#0b1a2e",
+            muted: "#94a3b8",
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body { background-color: #020e1d; color: #ecf2f8; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
+    
+    #export-area {
+      width: 1280px;
+      height: 720px;
+      position: relative;
+      overflow: hidden;
+      transition: background-color 0.3s;
+      transform-origin: top left; 
+    }
+    
+    .scroll-container::-webkit-scrollbar { height: 10px; width: 10px; }
+    .scroll-container::-webkit-scrollbar-track { background: #0b1a2e; }
+    .scroll-container::-webkit-scrollbar-thumb { background: #7c442d; border-radius: 5px; }
+
+    .bracket-input {
+      background: transparent;
+      border: none;
+      color: #ffffff;
+      width: 100%;
+      height: 100%;
+      outline: none;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 0 8px;
+      box-sizing: border-box;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bracket-input:focus { background: rgba(255, 145, 77, 0.15); }
+    .bracket-input::placeholder { color: #94a3b8; font-weight: 400; }
+
+    .export-text {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #ffffff;
+      padding: 0 8px;
+      box-sizing: border-box;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="h-screen flex flex-col md:flex-row">
+
+  <div id="root" class="w-full h-full flex"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Funções de Inicialização Dinâmica
+    const getInitialMatches = (usePlayins) => {
+      let baseMatches = {
+        p1: { t1: "", t2: "", label: "PLAY-IN 1", winner: null },
+        p2: { t1: "", t2: "", label: "PLAY-IN 2", winner: null },
+        lp1: { t1: "", t2: "", label: "LOSER PLAY-IN 1", winner: null },
+        lp2: { t1: "", t2: "", label: "LOSER PLAY-IN 2", winner: null },
+        g1: { t1: "", t2: "", label: "GAME 1", winner: null },
+        g2: { t1: "", t2: "", label: "GAME 2", winner: null },
+        g3: { t1: "", t2: "", label: "GAME 3", winner: null },
+        g4: { t1: "", t2: "", label: "GAME 4", winner: null },
+        g7: { t1: "Venc. Game 1", t2: "Venc. Game 2", label: "GAME 7", winner: null },
+        g8: { t1: "Venc. Game 3", t2: "Venc. Game 4", label: "GAME 8", winner: null },
+        g11: { t1: "Venc. Game 7", t2: "Venc. Game 8", label: "GAME 11", winner: null },
+        g5: { t1: "Perd. Game 1", t2: "Perd. Game 2", label: "GAME 5", winner: null },
+        g6: { t1: "Perd. Game 3", t2: "Perd. Game 4", label: "GAME 6", winner: null },
+        g9: { t1: "Venc. Game 5", t2: "Perd. Game 8", label: "GAME 9", winner: null },
+        g10: { t1: "Venc. Game 6", t2: "Perd. Game 7", label: "GAME 10", winner: null },
+        g12: { t1: "Venc. Game 9", t2: "Venc. Game 10", label: "GAME 12", winner: null },
+        g13: { t1: "Venc. Game 12", t2: "Perd. Game 11", label: "GAME 13", winner: null },
+        gf: { t1: "Venc. Game 11", t2: "Venc. Game 13", label: "GRANDE FINAL", winner: null },
+        champ: { t1: "", label: "CAMPEÃO", winner: null }
+      };
+
+      if (usePlayins) {
+        baseMatches.g1.t2 = "Venc. PLAY-IN 1";
+        baseMatches.g3.t2 = "Venc. PLAY-IN 2";
+        baseMatches.lp1.t1 = "Perd. PLAY-IN 1";
+        baseMatches.lp1.t2 = "Perd. Game 2";
+        baseMatches.lp2.t1 = "Perd. PLAY-IN 2";
+        baseMatches.lp2.t2 = "Perd. Game 4";
+        baseMatches.g5.t2 = "Venc. LOSER PLAY-IN 1";
+        baseMatches.g6.t2 = "Venc. LOSER PLAY-IN 2";
+      }
+
+      return baseMatches;
+    };
+
+    // Helper para ler do LocalStorage
+    const loadSaved = (key, fallback) => {
+      try {
+        const item = localStorage.getItem(key);
+        return item ? JSON.parse(item) : fallback;
+      } catch(e) {
+        return fallback;
+      }
+    };
+
+    const getTopology = (hasPlayins) => ({
+      p1: { w: { id: 'g1', slot: 't2' }, l: hasPlayins ? { id: 'lp1', slot: 't1' } : null },
+      p2: { w: { id: 'g3', slot: 't2' }, l: hasPlayins ? { id: 'lp2', slot: 't1' } : null },
+      
+      g1: { w: { id: 'g7', slot: 't1' }, l: { id: 'g5', slot: 't1' } },
+      g2: { w: { id: 'g7', slot: 't2' }, l: hasPlayins ? { id: 'lp1', slot: 't2' } : { id: 'g5', slot: 't2' } },
+      g3: { w: { id: 'g8', slot: 't1' }, l: { id: 'g6', slot: 't1' } },
+      g4: { w: { id: 'g8', slot: 't2' }, l: hasPlayins ? { id: 'lp2', slot: 't2' } : { id: 'g6', slot: 't2' } },
+      
+      lp1: { w: { id: 'g5', slot: 't2' }, l: null },
+      lp2: { w: { id: 'g6', slot: 't2' }, l: null },
+      
+      g7: { w: { id: 'g11', slot: 't1' }, l: { id: 'g10', slot: 't2' } },
+      g8: { w: { id: 'g11', slot: 't2' }, l: { id: 'g9', slot: 't2' } },
+      g11: { w: { id: 'gf', slot: 't1' }, l: { id: 'g13', slot: 't2' } },
+      
+      g5: { w: { id: 'g9', slot: 't1' }, l: null },
+      g6: { w: { id: 'g10', slot: 't1' }, l: null },
+      g9: { w: { id: 'g12', slot: 't1' }, l: null },
+      g10: { w: { id: 'g12', slot: 't2' }, l: null },
+      g12: { w: { id: 'g13', slot: 't1' }, l: null },
+      g13: { w: { id: 'gf', slot: 't2' }, l: null },
+      gf: { w: { id: 'champ', slot: 't1' }, l: null }
+    });
+
+    const getLayout = (hasPlayins) => {
+      const getColX = (col) => 30 + col * 170; 
+      const offsetCol = hasPlayins ? 0 : -1;
+      const x = (col) => getColX(col + offsetCol);
+
+      return {
+        p1: { x: x(0), y: 100, show: hasPlayins },
+        p2: { x: x(0), y: 260, show: hasPlayins },
+        lp1: { x: x(0), y: 480, show: hasPlayins },
+        lp2: { x: x(0), y: 560, show: hasPlayins },
+        
+        g1: { x: x(1), y: 80, show: true },
+        g2: { x: x(1), y: 160, show: true },
+        g3: { x: x(1), y: 240, show: true },
+        g4: { x: x(1), y: 320, show: true },
+        g5: { x: x(1), y: 460, show: true },
+        g6: { x: x(1), y: 540, show: true },
+        
+        g7: { x: x(2), y: 120, show: true },
+        g8: { x: x(2), y: 280, show: true },
+        g9: { x: x(2), y: 460, show: true },
+        g10: { x: x(2), y: 540, show: true },
+        
+        g11: { x: x(3), y: 200, show: true },
+        g12: { x: x(3), y: 500, show: true },
+        
+        g13: { x: x(4), y: 500, show: true },
+        
+        gf: { x: x(5), y: 340, show: true },
+        champ: { x: x(6), y: 340, show: true, single: true }
+      };
+    };
+
+    const clearDownstream = (matchId, nextState, hasPlayins) => {
+      const top = getTopology(hasPlayins)[matchId];
+      const m = nextState[matchId];
+      
+      if (top.w) {
+        const wTarget = nextState[top.w.id];
+        wTarget[top.w.slot] = "Venc. " + m.label;
+        if (wTarget.winner) {
+            wTarget.winner = null;
+            clearDownstream(top.w.id, nextState, hasPlayins);
+        }
+      }
+      if (top.l) {
+        const lTarget = nextState[top.l.id];
+        lTarget[top.l.slot] = "Perd. " + m.label;
+        if (lTarget.winner) {
+            lTarget.winner = null;
+            clearDownstream(top.l.id, nextState, hasPlayins);
+        }
+      }
+    };
+
+    const toggleAdvance = (matchId, clickedSlot, currentMatches, hasPlayins) => {
+      const next = { ...currentMatches };
+      for(let k in next) next[k] = { ...next[k] }; 
+
+      const m = next[matchId];
+
+      if (m.winner === clickedSlot) {
+        m.winner = null;
+        clearDownstream(matchId, next, hasPlayins);
+        return next;
+      } else {
+        if (m.winner) {
+          clearDownstream(matchId, next, hasPlayins);
+        }
+
+        m.winner = clickedSlot;
+        const winnerName = m[clickedSlot];
+        const loserSlot = clickedSlot === 't1' ? 't2' : 't1';
+        const loserName = m[loserSlot];
+
+        const top = getTopology(hasPlayins)[matchId];
+        if (top.w) {
+          next[top.w.id][top.w.slot] = winnerName;
+          if(next[top.w.id].winner) {
+             next[top.w.id].winner = null;
+             clearDownstream(top.w.id, next, hasPlayins);
+          }
+        }
+        if (top.l) {
+          next[top.l.id][top.l.slot] = loserName;
+          if(next[top.l.id].winner) {
+             next[top.l.id].winner = null;
+             clearDownstream(top.l.id, next, hasPlayins);
+          }
+        }
+        return next;
+      }
+    };
+
+    const autoAdvance = (matchId, winnerSlot, currentMatches, hasPlayins) => {
+      const next = { ...currentMatches };
+      for(let k in next) next[k] = { ...next[k] };
+      const m = next[matchId];
+      const winnerName = m[winnerSlot];
+      const loserSlot = winnerSlot === 't1' ? 't2' : 't1';
+      const loserName = m[loserSlot];
+      m.winner = winnerSlot;
+      const top = getTopology(hasPlayins)[matchId];
+      if (top.w) { next[top.w.id][top.w.slot] = winnerName; next[top.w.id].winner = null; }
+      if (top.l) { next[top.l.id][top.l.slot] = loserName; next[top.l.id].winner = null; }
+      return next;
+    };
+
+    const MatchCard = ({ x, y, match, id, onUpdate, onAdvance, isSingle, show, isExporting }) => {
+      if (!show) return null;
+      const w = 150;
+      const h = isSingle ? 26 : 52;
+      
+      const isPlaceholder = (t) => !t || t.startsWith('Venc') || t.startsWith('Perd') || t === 'TBD' || t === 'BYE';
+
+      return (
+        <div style={{ left: x, top: y, width: w, height: h, position: 'absolute' }} className={`bg-card border ${match.winner ? 'border-primary shadow-[0_0_8px_rgba(255,145,77,0.4)]' : 'border-secondary'} rounded-lg flex flex-col shadow-lg z-10 transition-all`}>
+          <div style={{ top: -16, width: '100%', position: 'absolute', textAlign: 'center' }}>
+            <span className="text-[9px] font-bold text-muted uppercase tracking-wider">{match.label}</span>
+          </div>
+          
+          <div className={`flex items-center w-full border-b border-background rounded-t-lg ${match.winner === 't1' ? 'bg-primary/20' : ''} ${match.winner === 't2' ? 'opacity-40' : ''}`} style={{ height: isSingle ? '100%' : '50%' }}>
+            
+            {isExporting ? (
+              <div className={`export-text ${match.winner === 't2' ? 'line-through text-muted' : ''}`}>
+                {match.t1 || "\u00A0"}
+              </div>
+            ) : (
+              <input 
+                className={`bracket-input ${match.winner === 't2' ? 'line-through text-muted' : ''}`} 
+                value={match.t1} 
+                onChange={(e) => onUpdate(id, 't1', e.target.value)}
+              />
+            )}
+
+            {!isExporting && !isSingle && !isPlaceholder(match.t1) && !isPlaceholder(match.t2) && (
+              <button 
+                onClick={() => onAdvance(id, 't1')} 
+                className={`text-sm hover:scale-125 transition-all mx-1 focus:outline-none ${match.winner === 't1' ? 'drop-shadow-[0_0_6px_rgba(255,255,255,0.8)] opacity-100' : 'grayscale opacity-50 hover:grayscale-0 hover:opacity-100'}`} 
+              >
+                🏆
+              </button>
+            )}
+          </div>
+
+          {!isSingle && (
+            <div className={`flex items-center w-full rounded-b-lg ${match.winner === 't2' ? 'bg-primary/20' : ''} ${match.winner === 't1' ? 'opacity-40' : ''}`} style={{ height: '50%' }}>
+              
+              {isExporting ? (
+                <div className={`export-text ${match.winner === 't1' ? 'line-through text-muted' : ''}`}>
+                  {match.t2 || "\u00A0"}
+                </div>
+              ) : (
+                <input 
+                  className={`bracket-input ${match.winner === 't1' ? 'line-through text-muted' : ''}`} 
+                  value={match.t2} 
+                  onChange={(e) => onUpdate(id, 't2', e.target.value)}
+                />
+              )}
+
+              {!isExporting && !isPlaceholder(match.t1) && !isPlaceholder(match.t2) && (
+                <button 
+                  onClick={() => onAdvance(id, 't2')} 
+                  className={`text-sm hover:scale-125 transition-all mx-1 focus:outline-none ${match.winner === 't2' ? 'drop-shadow-[0_0_6px_rgba(255,255,255,0.8)] opacity-100' : 'grayscale opacity-50 hover:grayscale-0 hover:opacity-100'}`} 
+                >
+                  🏆
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const App = () => {
+      // 1. Estados inicializados lendo o Local Storage ou os valores padrões
+      const [teams, setTeams] = useState(() => loadSaved('coretech_teams', []));
+      const [hasPlayins, setHasPlayins] = useState(() => loadSaved('coretech_hasPlayins', false));
+      const [matches, setMatches] = useState(() => loadSaved('coretech_matches', getInitialMatches(false)));
+      const [transparentBg, setTransparentBg] = useState(() => loadSaved('coretech_bg', true));
+      
+      const [newTeam, setNewTeam] = useState("");
+      const [isExporting, setIsExporting] = useState(false);
+      const [previewScale, setPreviewScale] = useState(1);
+      const containerRef = useRef(null);
+
+      const layoutConfig = getLayout(hasPlayins);
+
+      // 2. Efeitos para Sincronizar o Estado com o Local Storage sempre que houver mudança
+      useEffect(() => { localStorage.setItem('coretech_teams', JSON.stringify(teams)); }, [teams]);
+      useEffect(() => { localStorage.setItem('coretech_matches', JSON.stringify(matches)); }, [matches]);
+      useEffect(() => { localStorage.setItem('coretech_hasPlayins', JSON.stringify(hasPlayins)); }, [hasPlayins]);
+      useEffect(() => { localStorage.setItem('coretech_bg', JSON.stringify(transparentBg)); }, [transparentBg]);
+
+      const resetBracket = () => {
+        if (confirm("Tem certeza que deseja apagar o chaveamento e as equipes atuais? Tudo será reiniciado.")) {
+          setTeams([]);
+          setHasPlayins(false);
+          setMatches(getInitialMatches(false));
+        }
+      };
+
+      const shuffleAndFill = () => {
+        if (teams.length < 3) return alert("Cadastre pelo menos 3 equipes para gerar uma chave.");
+        
+        let shuffled = [...teams].sort(() => 0.5 - Math.random());
+        const usePlayins = shuffled.length > 8;
+        setHasPlayins(usePlayins);
+
+        let seeds = [];
+        if (usePlayins) {
+          seeds = shuffled.concat(Array(10 - shuffled.length).fill('BYE'));
+        } else {
+          seeds = shuffled.concat(Array(8 - shuffled.length).fill('BYE'));
+        }
+
+        let baseMatches = getInitialMatches(usePlayins);
+
+        if (usePlayins) {
+          baseMatches.p1.t1 = seeds[7]; baseMatches.p1.t2 = seeds[8];
+          baseMatches.p2.t1 = seeds[6]; baseMatches.p2.t2 = seeds[9];
+          baseMatches.g1.t1 = seeds[0]; 
+          baseMatches.g2.t1 = seeds[3]; baseMatches.g2.t2 = seeds[4];
+          baseMatches.g3.t1 = seeds[1]; 
+          baseMatches.g4.t1 = seeds[2]; baseMatches.g4.t2 = seeds[5];
+        } else {
+          baseMatches.g1.t1 = seeds[0]; baseMatches.g1.t2 = seeds[7];
+          baseMatches.g2.t1 = seeds[3]; baseMatches.g2.t2 = seeds[4];
+          baseMatches.g3.t1 = seeds[1]; baseMatches.g3.t2 = seeds[6];
+          baseMatches.g4.t1 = seeds[2]; baseMatches.g4.t2 = seeds[5];
+        }
+
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (let key in baseMatches) {
+            const m = baseMatches[key];
+            if (!m.winner) {
+              const isT1Valid = m.t1 && m.t1 !== 'BYE' && !m.t1.startsWith('Venc.') && !m.t1.startsWith('Perd.');
+              const isT2Valid = m.t2 && m.t2 !== 'BYE' && !m.t2.startsWith('Venc.') && !m.t2.startsWith('Perd.');
+              
+              if (m.t1 === 'BYE' && isT2Valid) {
+                baseMatches = autoAdvance(key, 't2', baseMatches, usePlayins);
+                changed = true;
+              } else if (m.t2 === 'BYE' && isT1Valid) {
+                baseMatches = autoAdvance(key, 't1', baseMatches, usePlayins);
+                changed = true;
+              } else if (m.t1 === 'BYE' && m.t2 === 'BYE') {
+                baseMatches = autoAdvance(key, 't1', baseMatches, usePlayins);
+                changed = true;
+              }
+            }
+          }
+        }
+
+        setMatches(baseMatches);
+      };
+
+      // Gerencia visualização
+      useEffect(() => {
+        const handleResize = () => {
+          if(containerRef.current) {
+            const cw = containerRef.current.clientWidth;
+            const ch = containerRef.current.clientHeight;
+            const scale = Math.min(cw / 1280, ch / 720) * 0.95;
+            setPreviewScale(scale);
+          }
+        };
+        window.addEventListener('resize', handleResize);
+        handleResize();
+        return () => window.removeEventListener('resize', handleResize);
+      }, []);
+
+      const updateMatch = (id, field, value) => {
+        setMatches(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+      };
+
+      const handleAdvance = (id, winnerSlot) => {
+        setMatches(prev => toggleAdvance(id, winnerSlot, prev, hasPlayins));
+      };
+
+      const handleAddTeam = () => {
+        if (newTeam.trim() !== "" && teams.length < 10) {
+          setTeams([...teams, newTeam.trim()]);
+          setNewTeam("");
+        }
+      };
+
+      const removeTeam = (index) => setTeams(teams.filter((_, i) => i !== index));
+
+      const exportPNG = () => {
+        setIsExporting(true);
+        setTimeout(async () => {
+          const element = document.getElementById("export-area");
+          const canvas = await html2canvas(element, {
+            backgroundColor: transparentBg ? null : "#020e1d",
+            scale: 1, 
+            width: 1280,
+            height: 720,
+            logging: false,
+            fontFamily: "'Segoe UI', sans-serif" 
+          });
+          
+          const link = document.createElement("a");
+          link.download = transparentBg ? "chaveamento_transparente.png" : "chaveamento_fundo.png";
+          link.href = canvas.toDataURL("image/png");
+          link.click();
+
+          setIsExporting(false); 
+        }, 500);
+      };
+
+      const renderLines = () => {
+        const w = 150; const h = 52;
+        const getOut = (id) => ({ x: layoutConfig[id].x + w, y: layoutConfig[id].y + h/2 });
+        const getInTop = (id) => ({ x: layoutConfig[id].x, y: layoutConfig[id].y + h * 0.25 });
+        const getInBot = (id) => ({ x: layoutConfig[id].x, y: layoutConfig[id].y + h * 0.75 });
+
+        const drawStep = (p1, p2) => `M ${p1.x} ${p1.y} L ${(p1.x + p2.x)/2} ${p1.y} L ${(p1.x + p2.x)/2} ${p2.y} L ${p2.x} ${p2.y}`;
+        const drawStraight = (p1, p2) => `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
+
+        return (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+            {hasPlayins && <path d={drawStep(getOut('p1'), getInBot('g1'))} stroke="#ff914d" strokeWidth="2" fill="none" />}
+            {hasPlayins && <path d={drawStep(getOut('p2'), getInBot('g3'))} stroke="#ff914d" strokeWidth="2" fill="none" />}
+
+            <path d={drawStep(getOut('g1'), getInTop('g7'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g2'), getInBot('g7'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g3'), getInTop('g8'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g4'), getInBot('g8'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g7'), getInTop('g11'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g8'), getInBot('g11'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g11'), getInTop('gf'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+
+            {hasPlayins && <path d={drawStep(getOut('lp1'), getInBot('g5'))} stroke="#a48990" strokeWidth="2" fill="none" />}
+            {hasPlayins && <path d={drawStep(getOut('lp2'), getInBot('g6'))} stroke="#a48990" strokeWidth="2" fill="none" />}
+
+            <path d={drawStep(getOut('g5'), getInTop('g9'))} stroke="#a48990" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g6'), getInTop('g10'))} stroke="#a48990" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g9'), getInTop('g12'))} stroke="#a48990" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g10'), getInBot('g12'))} stroke="#a48990" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g12'), getInTop('g13'))} stroke="#a48990" strokeWidth="2" fill="none" />
+            <path d={drawStep(getOut('g13'), getInBot('gf'))} stroke="#ff914d" strokeWidth="2" fill="none" />
+            
+            <path d={drawStraight(getOut('gf'), { x: layoutConfig['champ'].x, y: layoutConfig['champ'].y + 13 })} stroke="#ff914d" strokeWidth="2" fill="none" />
+          </svg>
+        );
+      };
+
+      const getColX = (col) => 30 + col * 170;
+      const offsetCol = hasPlayins ? 0 : -1;
+      const colX = (c) => getColX(c + offsetCol);
+
+      return (
+        <div className="flex w-full h-full">
+          
+          {/* PAINEL LATERAL */}
+          <div className="w-80 bg-card border-r border-secondary p-6 flex flex-col z-20 shadow-xl overflow-y-auto scroll-container">
+            <h1 className="text-xl font-bold text-primary mb-2">Coretech</h1>
+            <p className="text-xs text-muted mb-4 leading-relaxed">
+              O sistema salva suas edições automaticamente no navegador.
+            </p>
+
+            <div className="mb-6">
+              <h2 className="text-sm font-semibold mb-3 text-text">Equipes Cadastradas ({teams.length}/10)</h2>
+              <div className="flex gap-2 mb-3">
+                <input 
+                  type="text" 
+                  className="flex-1 bg-background border border-secondary rounded px-3 py-1.5 text-sm text-text outline-none focus:border-primary"
+                  placeholder="Nome da equipe..."
+                  value={newTeam}
+                  onChange={e => setNewTeam(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAddTeam()}
+                  disabled={teams.length >= 10 || isExporting}
+                />
+                <button 
+                  className="bg-primary hover:bg-orange-500 text-background font-bold px-3 py-1.5 rounded disabled:opacity-50"
+                  onClick={handleAddTeam}
+                  disabled={teams.length >= 10 || isExporting}
+                >
+                  +
+                </button>
+              </div>
+              
+              <ul className="space-y-2 max-h-32 overflow-y-auto pr-2 scroll-container">
+                {teams.map((t, i) => (
+                  <li key={i} className="flex justify-between items-center bg-background px-3 py-2 rounded text-sm border border-secondary/50">
+                    <span className="truncate">{t}</span>
+                    <button className="text-accent hover:text-red-400 ml-2" onClick={() => removeTeam(i)} disabled={isExporting}>✕</button>
+                  </li>
+                ))}
+                {teams.length === 0 && <p className="text-xs text-muted italic">Nenhuma equipe cadastrada.</p>}
+              </ul>
+            </div>
+
+            {/* BOTÕES DE CONTROLE DO TORNEIO */}
+            <div className="flex gap-2 mb-6">
+              <button 
+                className="flex-1 bg-secondary hover:bg-orange-800 text-white font-semibold py-2 px-2 rounded transition-colors shadow-lg disabled:opacity-50 text-sm"
+                onClick={shuffleAndFill}
+                disabled={isExporting}
+              >
+                🔄 Distribuir
+              </button>
+              <button 
+                className="bg-red-900/80 hover:bg-red-700 text-white font-semibold py-2 px-3 rounded transition-colors shadow-lg disabled:opacity-50 text-sm"
+                onClick={resetBracket}
+                disabled={isExporting}
+                title="Apagar todos os dados"
+              >
+                🗑️ Limpar
+              </button>
+            </div>
+            
+            <div className="bg-background/50 border border-secondary/30 p-3 rounded-lg mb-4 flex justify-between items-center">
+              <span className="text-sm font-semibold text-text">Fundo Transparente</span>
+              <button 
+                className={`w-12 h-6 rounded-full flex items-center transition-colors px-1 ${transparentBg ? 'bg-primary' : 'bg-gray-600'}`}
+                onClick={() => setTransparentBg(!transparentBg)}
+                disabled={isExporting}
+              >
+                <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${transparentBg ? 'translate-x-6' : ''}`}></div>
+              </button>
+            </div>
+
+            <div className="bg-background/50 border border-secondary/30 p-3 rounded-lg text-[11px] text-muted">
+              <strong>Dica de Controle:</strong><br/>
+              Ao clicar no troféu <strong>(🏆)</strong>, você declara a vitória. Se clicar novamente, a vitória é desmarcada e a equipe é apagada do resto da chave!
+            </div>
+
+            <div className="mt-auto pt-4">
+              <button 
+                className={`w-full text-background font-bold py-3 px-4 rounded shadow-lg transition-transform ${isExporting ? 'bg-orange-300 scale-95' : 'bg-primary hover:bg-orange-500 active:scale-95'}`}
+                onClick={exportPNG}
+                disabled={isExporting}
+              >
+                {isExporting ? "📸 CAPTURANDO IMAGEM..." : "📥 Exportar Imagem (1280x720)"}
+              </button>
+            </div>
+          </div>
+
+          {/* ÁREA DO CANVAS (Visualizador) */}
+          <div ref={containerRef} className="flex-1 bg-background flex items-center justify-center overflow-hidden relative pattern-dots">
+            
+            <div id="export-area" style={{ 
+              backgroundColor: transparentBg ? 'transparent' : '#020e1d',
+              transform: isExporting ? 'none' : `scale(${previewScale})`
+            }}>
+                  
+                  {/* Títulos Reposicionados */}
+                  <div className="absolute top-[10px] left-[30px] text-primary font-bold text-lg tracking-wide uppercase">
+                    Chave Principal (Winner's Bracket)
+                  </div>
+                  <div className="absolute top-[395px] left-[30px] text-accent font-bold text-lg tracking-wide uppercase">
+                    Chave dos Perdedores (Loser's Bracket)
+                  </div>
+
+                  {/* Rótulos Dinâmicos das Colunas (Ajustados verticalmente para evitar os blocos) */}
+                  {hasPlayins && <div className="absolute top-[45px]" style={{ left: colX(0) }}><span className="text-[10px] text-muted font-bold">PLAY-IN (PRELIMINAR)</span></div>}
+                  <div className="absolute top-[45px]" style={{ left: colX(1) }}><span className="text-[10px] text-muted font-bold">QUARTAS DE FINAL</span></div>
+                  <div className="absolute top-[85px]" style={{ left: colX(2) }}><span className="text-[10px] text-muted font-bold">SEMIFINAIS</span></div>
+                  <div className="absolute top-[165px]" style={{ left: colX(3) }}><span className="text-[10px] text-muted font-bold">FINAL DA WINNER</span></div>
+
+                  {hasPlayins && <div className="absolute top-[425px]" style={{ left: colX(0) }}><span className="text-[10px] text-muted font-bold">LOSER PLAY-IN</span></div>}
+                  <div className="absolute top-[425px]" style={{ left: colX(1) }}><span className="text-[10px] text-muted font-bold">RODADA 1</span></div>
+                  <div className="absolute top-[425px]" style={{ left: colX(2) }}><span className="text-[10px] text-muted font-bold">RODADA 2</span></div>
+                  <div className="absolute top-[465px]" style={{ left: colX(3) }}><span className="text-[10px] text-muted font-bold">SEMIFINAL LOSER</span></div>
+                  <div className="absolute top-[465px]" style={{ left: colX(4) }}><span className="text-[10px] text-muted font-bold">FINAL LOSER</span></div>
+                  
+                  <div className="absolute top-[305px] text-[10px] text-primary font-bold text-center w-[150px]" style={{ left: colX(5) }}>
+                    A GRANDE FINAL
+                  </div>
+
+                  {/* Renderização das Linhas SVG */}
+                  {renderLines()}
+
+                  {/* Renderização das Cartelas HTML */}
+                  {Object.keys(layoutConfig).map(key => {
+                    const match = matches[key];
+                    if (!match) return null;
+                    const config = layoutConfig[key];
+                    return (
+                      <MatchCard 
+                        key={key} 
+                        id={key} 
+                        x={config.x} 
+                        y={config.y} 
+                        show={config.show}
+                        match={match} 
+                        onUpdate={updateMatch}
+                        onAdvance={handleAdvance}
+                        isSingle={config.single}
+                        isExporting={isExporting}
+                      />
+                    )
+                  })}
+
+            </div>
+          </div>
+
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

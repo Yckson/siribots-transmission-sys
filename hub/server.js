@@ -184,6 +184,12 @@ app.get("/", (req, res) => {
   sendPublicFile(res, "viewer.html");
 });
 
+app.get("/generate", (req, res) => {
+  sendPublicFile(res, "generator.html");
+});
+
+app.use('/libs', express.static(path.join(__dirname, 'libs')));
+
 // Rota 2: Página de Admin (Restrita ao Localhost)
 app.get("/admin", adminOnly, (req, res) => {
   sendPublicFile(res, "admin.html");
