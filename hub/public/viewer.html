@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Siribots - Transmissao Ao Vivo</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    :root { --bg: #020e1d; --panel: #0b1a2f; --text: #ecf2f8; --muted: #a0a9b6; --primary: #ff914d; --secondary: #7c442d; --accent: #a48990; --accent-off: #2e3a4a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; background: radial-gradient(1200px 600px at 15% -10%, #15263d, var(--bg) 60%); color: var(--text); font-family: "Segoe UI", sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; background: rgba(2,14,29,0.82); backdrop-filter: blur(6px); border-bottom: 1px solid rgba(255,255,255,0.06); position: sticky; top: 0; z-index: 10; }
+    .brand { font-weight: 700; letter-spacing: 0.4px; color: var(--primary) }
+    .status { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; letter-spacing: 0.2px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.08); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-off); box-shadow: 0 0 12px rgba(255,255,255,0.25); }
+    .dot.live { background: var(--primary); box-shadow: 0 0 14px rgba(255,145,77,0.7); animation: pulse 1.6s infinite; }
+    @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.25); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 24px; padding: 24px; }
+    .player-card { background: var(--panel); border-radius: 16px; padding: 16px; box-shadow: 0 24px 40px rgba(0,0,0,0.45); }
+    
+    /* Alterações principais na casca do player */
+    .player-wrap { position: relative; border-radius: 14px; overflow: hidden; background: #000; }
+    video { width: 100%; height: auto; display: block; background: #000; }
+    
+    /* Estilo do nosso botão de tela cheia customizado */
+    .fs-btn {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 50;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white;
+      border-radius: 8px;
+      padding: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s;
+    }
+    .fs-btn:hover {
+      background: var(--primary);
+      border-color: var(--primary);
+      transform: scale(1.05);
+    }
+
+    .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+    .overlay img { width: 100%; height: 100%; object-fit: contain; }
+    .title { margin: 16px 0 6px; font-size: 20px; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 14px; }
+    .side { background: var(--panel); border-radius: 16px; padding: 16px; height: fit-content; }
+    .side h3 { margin-top: 0; }
+    .schedule { display: grid; gap: 12px; }
+    .item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.04); }
+    .time { font-weight: 700; color: var(--primary); min-width: 54px; }
+    .empty { color: var(--muted); font-size: 14px; }
+    
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; padding: 16px; }
+      .side { order: 2; }
+    }
+    
+    /* Quando o wrap estiver em tela cheia, garante o tamanho e remove bordas */
+    .player-wrap:fullscreen { width: 100vw; height: 100vh; border-radius: 0; }
+    .player-wrap:fullscreen video { width: 100%; height: 100%; object-fit: contain; }
+    .player-wrap:-webkit-full-screen { width: 100vw; height: 100vh; border-radius: 0; }
+    .player-wrap:-webkit-full-screen video { width: 100%; height: 100%; object-fit: contain; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Siribots Live</div>
+    <div class="status">
+      <span class="badge"><span id="status-dot" class="dot"></span><span id="status-text">Verificando sinal...</span></span>
+    </div>
+  </header>
+  <main class="layout">
+    <section class="player-card">
+      <div class="player-wrap" id="player-wrap">
+        <!-- O atributo 'controls' foi removido para ocultar os controles nativos -->
+        <video id="video" autoplay muted playsinline></video>
+        
+        <div class="overlay" id="overlay">
+          <img id="overlay-img" alt="Overlay" />
+        </div>
+
+        <!-- Nosso botão de Tela Cheia sobreposto continua aqui -->
+        <button id="fs-btn" class="fs-btn" title="Tela Cheia">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+          </svg>
+        </button>
+      </div>
+      <div id="stream-title" class="title">Transmissao do Robo</div>
+      <div id="stream-desc" class="meta">Sinal direto da base Siribots</div>
+    </section>
+    
+    <aside class="side">
+      <h3>Cronograma do Evento</h3>
+      <div id="schedule" class="schedule"></div>
+      <div id="schedule-empty" class="empty" style="display:none;">Cronograma ainda nao definido.</div>
+    </aside>
+  </main>
+  
+  <script>
+    const playerWrap = document.getElementById('player-wrap');
+    const fsBtn = document.getElementById('fs-btn');
+    const video = document.getElementById('video');
+    const videoSrc = '/stream.m3u8';
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const scheduleEl = document.getElementById('schedule');
+    const scheduleEmpty = document.getElementById('schedule-empty');
+    const overlayWrap = document.getElementById('overlay');
+    const overlayImg = document.getElementById('overlay-img');
+    const streamTitle = document.getElementById('stream-title');
+    const streamDesc = document.getElementById('stream-desc');
+
+    // Lógica que joga a Div Inteira (Vídeo + Overlay) para tela cheia
+    function toggleFullScreen() {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (playerWrap.requestFullscreen) {
+          playerWrap.requestFullscreen();
+        } else if (playerWrap.webkitRequestFullscreen) {
+          playerWrap.webkitRequestFullscreen(); // Safari
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+        }
+      }
+    }
+
+    // Ao clicar no botão de fullscreen, além do fullscreen HTML, envia mensagem para o app RN
+    fsBtn.addEventListener('click', function(e) {
+      toggleFullScreen();
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage('fullscreen');
+      }
+    });
+    playerWrap.addEventListener('dblclick', function(e) {
+      toggleFullScreen();
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage('fullscreen');
+      }
+    });
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 5,
+        enableWorker: true
+      });
+      hls.loadSource(videoSrc);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, function() {
+        video.play().catch(() => console.log('Auto-play prevenido pelo navegador.'));
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = videoSrc;
+      video.addEventListener('loadedmetadata', function() {
+        video.play();
+      });
+    }
+
+    function renderSchedule(items) {
+      scheduleEl.innerHTML = '';
+      if (!items || items.length === 0) {
+        scheduleEmpty.style.display = 'block';
+        return;
+      }
+      scheduleEmpty.style.display = 'none';
+      for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'item';
+        row.innerHTML = `<div class="time">${item.time || ''}</div><div>${item.title || ''}</div>`;
+        scheduleEl.appendChild(row);
+      }
+    }
+
+    function applyOverlay(overlay) {
+      if (overlay?.enabled && overlay?.filename) {
+        overlayWrap.style.display = 'flex';
+        overlayImg.src = `/assets/${overlay.filename}?v=${encodeURIComponent(overlay.updatedAt || '')}`;
+      } else {
+        overlayWrap.style.display = 'none';
+        overlayImg.removeAttribute('src');
+      }
+    }
+
+    function updateStatus(status) {
+      const isLive = status === 'live';
+      statusDot.classList.toggle('live', isLive);
+      statusText.textContent = isLive ? 'AO VIVO' : 'AGUARDANDO SINAL';
+    }
+
+    function applyMeta(meta) {
+      if (meta?.title) streamTitle.textContent = meta.title;
+      if (meta?.description) streamDesc.textContent = meta.description;
+    }
+
+    async function connectWs() {
+      const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      const response = await fetch('/ui-config');
+      const config = await response.json();
+      const ws = new WebSocket(`${wsProtocol}://${location.hostname}:${config.uiWsPort}`);
+
+      ws.addEventListener('message', (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+
+        if (payload.type === 'state') {
+          renderSchedule(payload.config?.schedule || []);
+          applyOverlay(payload.config?.overlay);
+          applyMeta(payload.config?.meta);
+          updateStatus(payload.status);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        setTimeout(connectWs, 1500);
+      });
+    }
+
+    connectWs();
+  </script>
+</body>
+</html>

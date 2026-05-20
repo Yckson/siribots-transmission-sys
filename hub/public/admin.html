@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Siribots - Painel de Controle</title>
+  <style>
+    body { font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px; }
+    .card { background: white; max-width: 860px; margin: 0 auto; padding: 30px; border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,0.05); }
+    h1 { color: #2c3e50; margin-top: 0; }
+    .status-box { padding: 15px; border-radius: 6px; margin-bottom: 15px; font-weight: bold; }
+    .status-live { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status-waiting { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .btn { display: inline-block; background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; border: none; cursor: pointer; }
+    .btn:hover { background: #2980b9; }
+    .section { margin-top: 25px; }
+    .row { display: grid; grid-template-columns: 120px 1fr auto; gap: 10px; margin-bottom: 10px; }
+    .row input { padding: 8px; }
+    .row button { padding: 8px 12px; }
+    .schedule-list { margin-top: 12px; }
+    .overlay-preview { margin-top: 10px; max-width: 320px; border-radius: 8px; border: 1px solid #ddd; }
+    .muted { color: #777; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Painel Hub - Siribots</h1>
+    <p>Bem-vindo ao painel administrativo local.</p>
+
+    <h3>Status da Transmissao (Odroid):</h3>
+    <div id="status-container" class="status-box status-waiting">
+      Verificando conexao da placa fonte...
+    </div>
+
+    <div class="section">
+      <h3>Informacoes da Transmissao</h3>
+      <div class="row">
+        <input id="title-input-meta" type="text" placeholder="Titulo da transmissao" />
+        <input id="desc-input-meta" type="text" placeholder="Descricao" />
+        <button class="btn" id="save-meta">Salvar</button>
+      </div>
+      <div class="muted">O titulo e a descricao aparecem no visualizador em tempo real.</div>
+    </div>
+
+    <div class="section">
+      <h3>Cronograma do Evento</h3>
+      <div class="row">
+        <input id="time-input" type="text" placeholder="Horario (ex: 14:30)" />
+        <input id="title-input" type="text" placeholder="Descricao" />
+        <button class="btn" id="add-item">Adicionar</button>
+      </div>
+      <div id="schedule-list" class="schedule-list"></div>
+      <button class="btn" id="save-schedule">Salvar Cronograma</button>
+      <div class="muted">O cronograma aparece em tempo real para os espectadores.</div>
+    </div>
+
+    <div class="section">
+      <h3>Overlay da Transmissao</h3>
+      <input id="overlay-file" type="file" accept="image/*" />
+      <div>
+        <label>
+          <input id="overlay-enabled" type="checkbox" /> Exibir overlay
+        </label>
+      </div>
+      <img id="overlay-preview" class="overlay-preview" alt="Preview" style="display:none;" />
+      <button class="btn" id="save-overlay">Salvar Overlay</button>
+      <div class="muted">A imagem se ajusta automaticamente ao tamanho do player.</div>
+    </div>
+
+    <a href="/" target="_blank" class="btn">Abrir Visualizador do Robo</a>
+  </div>
+
+  <script>
+    const scheduleList = document.getElementById('schedule-list');
+    const timeInput = document.getElementById('time-input');
+    const titleInput = document.getElementById('title-input');
+    const addItemBtn = document.getElementById('add-item');
+    const saveScheduleBtn = document.getElementById('save-schedule');
+    const overlayFile = document.getElementById('overlay-file');
+    const overlayEnabled = document.getElementById('overlay-enabled');
+    const overlayPreview = document.getElementById('overlay-preview');
+    const metaTitleInput = document.getElementById('title-input-meta');
+    const metaDescInput = document.getElementById('desc-input-meta');
+    const saveMetaBtn = document.getElementById('save-meta');
+
+    let schedule = [];
+    let overlayDataUrl = null;
+    let meta = { title: '', description: '' };
+
+    function syncMetaFromInputs() {
+      meta.title = metaTitleInput.value.trim();
+      meta.description = metaDescInput.value.trim();
+    }
+
+    function renderSchedule() {
+      scheduleList.innerHTML = '';
+      schedule.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `
+          <input type="text" value="${item.time || ''}" data-index="${index}" data-field="time" />
+          <input type="text" value="${item.title || ''}" data-index="${index}" data-field="title" />
+          <button data-index="${index}">Remover</button>
+        `;
+        scheduleList.appendChild(row);
+      });
+    }
+
+    scheduleList.addEventListener('input', (event) => {
+      const target = event.target;
+      const index = Number(target.dataset.index);
+      const field = target.dataset.field;
+      if (!Number.isNaN(index) && field) {
+        schedule[index][field] = target.value;
+      }
+    });
+
+    scheduleList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target.tagName === 'BUTTON') {
+        const index = Number(target.dataset.index);
+        if (!Number.isNaN(index)) {
+          schedule.splice(index, 1);
+          renderSchedule();
+        }
+      }
+    });
+
+    addItemBtn.addEventListener('click', () => {
+      schedule.push({ time: timeInput.value.trim(), title: titleInput.value.trim() });
+      timeInput.value = '';
+      titleInput.value = '';
+      renderSchedule();
+    });
+
+    saveScheduleBtn.addEventListener('click', async () => {
+      syncMetaFromInputs();
+      await fetch('/admin/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule, meta })
+      });
+    });
+
+    saveMetaBtn.addEventListener('click', async () => {
+      syncMetaFromInputs();
+      await fetch('/admin/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule, meta })
+      });
+    });
+
+    metaTitleInput.addEventListener('input', syncMetaFromInputs);
+    metaDescInput.addEventListener('input', syncMetaFromInputs);
+
+    overlayFile.addEventListener('change', () => {
+      const file = overlayFile.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        overlayDataUrl = reader.result;
+        overlayPreview.src = overlayDataUrl;
+        overlayPreview.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    });
+
+    document.getElementById('save-overlay').addEventListener('click', async () => {
+      await fetch('/admin/api/overlay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl: overlayDataUrl, enabled: overlayEnabled.checked })
+      });
+      overlayDataUrl = null;
+      overlayFile.value = '';
+    });
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch('/status');
+        const data = await response.json();
+        const container = document.getElementById('status-container');
+
+        if (data.status === 'live') {
+          container.className = 'status-box status-live';
+          container.textContent = 'SINAL ATIVO - A placa Odroid esta transmitindo video.';
+        } else {
+          container.className = 'status-box status-waiting';
+          container.textContent = 'AGUARDANDO SINAL - Nenhuma transmissao ativa no momento.';
+        }
+      } catch (e) {
+        console.error('Erro ao buscar status');
+      }
+    }
+
+    setInterval(fetchStatus, 2000);
+    fetchStatus();
+
+    async function connectWs() {
+      const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      const response = await fetch('/ui-config');
+      const config = await response.json();
+      const ws = new WebSocket(`${wsProtocol}://${location.hostname}:${config.uiWsPort}`);
+
+      ws.addEventListener('message', (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+        if (payload.type === 'state') {
+          schedule = payload.config?.schedule || [];
+          renderSchedule();
+          meta = payload.config?.meta || { title: '', description: '' };
+          metaTitleInput.value = meta.title || '';
+          metaDescInput.value = meta.description || '';
+          overlayEnabled.checked = Boolean(payload.config?.overlay?.enabled);
+          if (payload.config?.overlay?.filename) {
+            overlayPreview.src = `/assets/${payload.config.overlay.filename}?v=${encodeURIComponent(payload.config.overlay.updatedAt || '')}`;
+            overlayPreview.style.display = 'block';
+          }
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        setTimeout(connectWs, 1500);
+      });
+    }
+
+    connectWs();
+  </script>
+</body>
+</html>

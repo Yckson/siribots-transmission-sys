@@ -13,11 +13,15 @@ const DISCOVER_VIEWER = "DISCOVER_HUB_CLIENT";
 const UDP_PORT_SOURCE = 41001;
 const UDP_PORT_VIEWER = 41002;
 const WS_PORT = 42000;
+const UI_WS_PORT = Number.parseInt(process.env.UI_WS_PORT || "42001", 10);
 const HTTP_PORT = Number.parseInt(process.env.HLS_HTTP_PORT || "43000", 10);
 const WAITING_INTERVAL_MS = 1000;
 const WAITING_TIMEOUT_MS = 5000;
 const MAX_INPUT_BUFFER_BYTES = Number.parseInt(process.env.MAX_INPUT_BUFFER_BYTES || "2097152", 10);
 const HLS_DIR = path.join(__dirname, "hls");
+const ASSETS_DIR = path.join(__dirname, "assets");
+const PUBLIC_DIR = path.join(__dirname, "public");
+const CONFIG_PATH = path.join(__dirname, "hub-config.json");
 const HLS_PLAYLIST = "stream.m3u8";
 const HLS_SEGMENT_PATTERN = "segment_%03d.ts";
 const WAITING_SEGMENT = "waiting.ts";
@@ -28,6 +32,52 @@ const HLS_FPS = Number.parseInt(process.env.HLS_FPS || "30", 10);
 const HLS_GOP = Math.max(1, Math.round(HLS_FPS * HLS_TIME_SECONDS));
 const HLS_WAITING_SIZE = (process.env.HLS_WAITING_SIZE || "640x480").trim();
 const HLS_WAITING_FPS = Number.parseInt(process.env.HLS_WAITING_FPS || "30", 10);
+
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    return {
+      schedule: [],
+      meta: { title: "Transmissao do Robo", description: "Sinal direto da base Siribots" },
+      overlay: { enabled: false, filename: null, updatedAt: null },
+    };
+  }
+
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      schedule: Array.isArray(parsed.schedule) ? parsed.schedule : [],
+      meta: {
+        title: parsed.meta?.title || "Transmissao do Robo",
+        description: parsed.meta?.description || "Sinal direto da base Siribots",
+      },
+      overlay: {
+        enabled: Boolean(parsed.overlay?.enabled),
+        filename: parsed.overlay?.filename || null,
+        updatedAt: parsed.overlay?.updatedAt || null,
+      },
+    };
+  } catch (error) {
+    console.warn("Failed to load config, using defaults:", error.message);
+    return {
+      schedule: [],
+      meta: { title: "Transmissao do Robo", description: "Sinal direto da base Siribots" },
+      overlay: { enabled: false, filename: null, updatedAt: null },
+    };
+  }
+}
+
+function saveConfig(config) {
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  } catch (error) {
+    console.warn("Failed to save config:", error.message);
+  }
+}
+
+function ensureAssetsDir() {
+  fs.mkdirSync(ASSETS_DIR, { recursive: true });
+}
 
 function getIpFacingClient(clientIp) {
   const interfaces = os.networkInterfaces();
@@ -106,6 +156,9 @@ function clearHlsDir() {
 }
 
 const app = express();
+app.use(express.json({ limit: "5mb" }));
+
+let appConfig = loadConfig();
 
 // --- MIDDLEWARES ---
 // Middleware de Segurança: Bloqueia acesso à rota de admin para IPs externos
@@ -122,115 +175,18 @@ function adminOnly(req, res, next) {
 
 // --- ROTAS WEB HTML ---
 
+function sendPublicFile(res, filename) {
+  res.sendFile(path.join(PUBLIC_DIR, filename));
+}
+
 // Rota 1: Página do Viewer (Pública)
 app.get("/", (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Siribots - Visualizador Ao Vivo</title>
-      <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-      <style>
-        body { margin: 0; padding: 0; background-color: #000; display: flex; flex-direction: column; height: 100vh; align-items: center; justify-content: center; font-family: sans-serif; color: white;}
-        video { width: 100%; max-width: 1280px; height: auto; background-color: #111; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        .header { position: absolute; top: 15px; left: 15px; background: rgba(0,0,0,0.6); padding: 5px 15px; border-radius: 5px; }
-        .live-badge { color: red; font-weight: bold; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h3>Siribots <span class="live-badge">● AO VIVO</span></h3>
-      </div>
-      <video id="video" controls autoplay muted playsinline></video>
-      <script>
-        const video = document.getElementById('video');
-        const videoSrc = '/stream.m3u8';
-        
-        if (Hls.isSupported()) {
-          const hls = new Hls({
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 5,
-            enableWorker: true
-          });
-          hls.loadSource(videoSrc);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            video.play().catch(e => console.log("Auto-play prevenido pelo navegador."));
-          });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = videoSrc;
-          video.addEventListener('loadedmetadata', function() {
-            video.play();
-          });
-        }
-      </script>
-    </body>
-    </html>
-  `);
+  sendPublicFile(res, "viewer.html");
 });
 
 // Rota 2: Página de Admin (Restrita ao Localhost)
 app.get("/admin", adminOnly, (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Siribots - Painel de Controle</title>
-      <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 40px; }
-        .card { background: white; max-width: 600px; margin: 0 auto; padding: 30px; border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,0.05); }
-        h1 { color: #2c3e50; margin-top: 0; }
-        .status-box { padding: 15px; border-radius: 6px; margin-bottom: 15px; font-weight: bold; }
-        .status-live { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .status-waiting { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .btn { display: inline-block; background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
-        .btn:hover { background: #2980b9; }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <h1>Painel Hub - Siribots</h1>
-        <p>Bem-vindo ao painel administrativo local.</p>
-        
-        <h3>Status da Transmissão (Odroid):</h3>
-        <div id="status-container" class="status-box status-waiting">
-          Verificando conexão da placa fonte...
-        </div>
-
-        <a href="/" target="_blank" class="btn">Abrir Visualizador do Robô</a>
-      </div>
-
-      <script>
-        async function fetchStatus() {
-          try {
-            const response = await fetch('/status');
-            const data = await response.json();
-            const container = document.getElementById('status-container');
-            
-            if (data.status === 'live') {
-              container.className = 'status-box status-live';
-              container.innerHTML = '🟢 SINAL ATIVO - A placa Odroid está transmitindo vídeo.';
-            } else {
-              container.className = 'status-box status-waiting';
-              container.innerHTML = '🔴 AGUARDANDO SINAL - Nenhuma transmissão ativa no momento.';
-            }
-          } catch (e) {
-            console.error('Erro ao buscar status');
-          }
-        }
-        
-        // Atualiza a cada 2 segundos
-        setInterval(fetchStatus, 2000);
-        fetchStatus();
-      </script>
-    </body>
-    </html>
-  `);
+  sendPublicFile(res, "admin.html");
 });
 
 // --- FIM ROTAS WEB ---
@@ -283,12 +239,69 @@ function ensureWaitingSegment() {
   });
 }
 
-app.get("/status", (req, res) => {
+function getStreamStatus() {
   const now = Date.now();
   const sourceStale = now - lastSourceFrameAt > WAITING_TIMEOUT_MS;
-  const isLive = Boolean(activeSource) && !sourceStale;
-  const payload = { status: isLive ? "live" : "waiting" };
+  return Boolean(activeSource) && !sourceStale ? "live" : "waiting";
+}
+
+app.get("/status", (req, res) => {
+  const payload = { status: getStreamStatus() };
   res.json(payload);
+});
+
+app.get("/ui-config", (req, res) => {
+  res.json({ uiWsPort: UI_WS_PORT });
+});
+
+app.post("/admin/api/schedule", adminOnly, (req, res) => {
+  const schedule = Array.isArray(req.body?.schedule) ? req.body.schedule : [];
+  const meta = req.body?.meta || {};
+  appConfig = {
+    ...appConfig,
+    schedule: schedule.map((item) => ({
+      time: String(item.time || "").trim(),
+      title: String(item.title || "").trim(),
+    })),
+    meta: {
+      title: String(meta.title || appConfig.meta?.title || "").trim(),
+      description: String(meta.description || appConfig.meta?.description || "").trim(),
+    },
+  };
+  saveConfig(appConfig);
+  broadcastState();
+  res.json({ ok: true });
+});
+
+app.post("/admin/api/overlay", adminOnly, (req, res) => {
+  const dataUrl = req.body?.dataUrl;
+  const enabled = Boolean(req.body?.enabled);
+  let filename = appConfig.overlay.filename || null;
+
+  if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+    const matches = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/);
+    if (!matches) {
+      res.status(400).json({ ok: false, error: "Invalid image data" });
+      return;
+    }
+    const ext = matches[1] === "jpeg" ? "jpg" : matches[1];
+    const buffer = Buffer.from(matches[2], "base64");
+    ensureAssetsDir();
+    filename = `overlay.${ext}`;
+    fs.writeFileSync(path.join(ASSETS_DIR, filename), buffer);
+  }
+
+  appConfig = {
+    ...appConfig,
+    overlay: {
+      enabled,
+      filename,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+  saveConfig(appConfig);
+  broadcastState();
+  res.json({ ok: true });
 });
 
 app.get(`/${HLS_PLAYLIST}`, (req, res) => {
@@ -330,6 +343,8 @@ app.use(
   })
 );
 
+app.use("/assets", express.static(ASSETS_DIR));
+
 const httpServer = app.listen(HTTP_PORT, "0.0.0.0", () => {
   console.log(`Servidor Web/HLS iniciado na porta :${HTTP_PORT}`);
   console.log(`-> Painel do Robô: http://localhost:${HTTP_PORT}`);
@@ -340,9 +355,31 @@ const wss = new WebSocket.Server({ port: WS_PORT }, () => {
   console.log(`WebSocket server apenas para Fonte iniciado na porta :${WS_PORT}`);
 });
 
+const uiWss = new WebSocket.Server({ port: UI_WS_PORT }, () => {
+  console.log(`WebSocket server UI iniciado na porta :${UI_WS_PORT}`);
+});
+
 let activeSource = null;
 let lastSourceFrameAt = 0;
 let ffmpegProcess = null;
+let lastBroadcastStatus = "unknown";
+
+function buildStatePayload() {
+  return {
+    type: "state",
+    status: getStreamStatus(),
+    config: appConfig,
+  };
+}
+
+function broadcastState() {
+  const payload = JSON.stringify(buildStatePayload());
+  for (const client of uiWss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
 
 function buildFfmpegArgs() {
   const playlistPath = path.join(HLS_DIR, HLS_PLAYLIST);
@@ -414,7 +451,23 @@ setInterval(() => {
   if (!activeSource || sourceStale) {
     stopFfmpeg();
   }
+
+  const currentStatus = getStreamStatus();
+  if (currentStatus !== lastBroadcastStatus) {
+    lastBroadcastStatus = currentStatus;
+    broadcastState();
+  }
 }, WAITING_INTERVAL_MS);
+
+uiWss.on("connection", (ws, req) => {
+  const remote = req.socket.remoteAddress || "unknown";
+  console.log(`[${new Date().toISOString()}] UI conectado de ${remote}`);
+  ws.send(JSON.stringify(buildStatePayload()));
+
+  ws.on("close", () => {
+    console.log(`[${new Date().toISOString()}] UI desconectado de ${remote}`);
+  });
+});
 
 wss.on("connection", (ws, req) => {
   const remote = req.socket.remoteAddress || "unknown";
@@ -478,6 +531,7 @@ process.on("SIGINT", () => {
   sourceListener.close();
   viewerListener.close();
   wss.close();
+  uiWss.close();
   httpServer.close();
   stopFfmpeg();
   process.exit(0);
