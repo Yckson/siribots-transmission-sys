@@ -10,8 +10,7 @@ import AppDrawerContent from "./navigation/AppDrawerContent";
 const Drawer = createDrawerNavigator();
 
 const AppRoot = () => {
-  const { state, startDiscovery, handlePlaybackError, handlePlaybackStatus } =
-    useStreamController();
+  const { state, startDiscovery } = useStreamController();
 
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => {
@@ -35,14 +34,7 @@ const AppRoot = () => {
         drawerContent={(props) => <AppDrawerContent {...props} />}
       >
         <Drawer.Screen name="Viewer">
-          {(props) => (
-            <ViewerScreen
-              {...props}
-              state={state}
-              onPlaybackError={handlePlaybackError}
-              onPlaybackStatus={handlePlaybackStatus}
-            />
-          )}
+          {(props) => <ViewerScreen {...props} state={state} />}
         </Drawer.Screen>
         <Drawer.Screen name="SiriBots" component={SiriBotsScreen} />
       </Drawer.Navigator>

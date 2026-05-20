@@ -3,7 +3,7 @@
     "name": "Siribots Viewer",
     "slug": "siribots-viewer",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "platforms": [
       "android",
       "ios"

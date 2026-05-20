@@ -30,7 +30,8 @@
     "react-native-screens": "~3.29.0",
     "react-native-udp": "^4.1.0",
     "react-native-web": "~0.19.6",
-    "react-native-webview": "13.6.4"
+    "react-native-webview": "13.6.4",
+    "react-native-worklets-core": "^1.6.3"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
