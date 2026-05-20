@@ -62,6 +62,7 @@ const ViewerScreen = ({ state, navigation }) => {
               allowsFullscreenVideo={true}
               scalesPageToFit={true}
               javaScriptEnabled={true} // <-- Adicionado por segurança
+              mixedContentMode="always"
             />
           ) : (
             <View className="flex-1 items-center justify-center">
