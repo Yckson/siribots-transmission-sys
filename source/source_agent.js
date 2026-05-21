@@ -1,264 +1,105 @@
 require("dotenv").config();
 const dgram = require("dgram");
-const { spawn } = require("child_process");
 const WebSocket = require("ws");
+const { SerialPort } = require('serialport');
+const { ReadlineParser } = require('@serialport/parser-readline');
 
+// Configurações de Discovery (Mantidas)
 const DISCOVER_SOURCE = "DISCOVER_HUB_SOURCE";
 const UDP_PORT_SOURCE = 41001;
 const WS_PORT_FALLBACK = 42000;
 const DISCOVERY_TIMEOUT_MS = 5000;
 const RETRY_DELAY_MS = 2000;
-const MAX_WS_BUFFER_BYTES = Number.parseInt(process.env.MAX_WS_BUFFER_BYTES || "2097152", 10);
 
 const HUB_IP_ENV = (process.env.HUB_IP || "").trim();
 const HUB_WS_PORT_ENV = Number(process.env.HUB_WS_PORT || "");
 
-const CAMERA_NAME = (process.env.CAMERA_NAME || "").trim();
-const VIDEO_DEVICE = (process.env.VIDEO_DEVICE || "/dev/video0").trim();
-const VIDEO_SIZE = (process.env.VIDEO_SIZE || "640x480").trim();
-const FRAME_RATE = (process.env.FRAME_RATE || "30").trim();
-const GOP_SIZE = Math.max(1, Math.round(Number.parseInt(FRAME_RATE, 10) / 2));
-const FFMPEG_BIN = (process.env.FFMPEG_BIN || "ffmpeg").trim();
-const PLATFORM_OVERRIDE = (process.env.SOURCE_PLATFORM || "").trim().toLowerCase();
+// Configurações da Serial
+const SERIAL_PATH = process.env.SERIAL_PORT || "/dev/ttyACM0";
+const BAUD_RATE = 9600;
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+// Função discoverHub() original mantida intocada (reaproveitada do seu código)
 function discoverHub() {
-  if (HUB_IP_ENV) {
-    return Promise.resolve({
-      hubIp: HUB_IP_ENV,
-      wsPort: HUB_WS_PORT_ENV || WS_PORT_FALLBACK,
-    });
-  }
-
+  if (HUB_IP_ENV) return Promise.resolve({ hubIp: HUB_IP_ENV, wsPort: HUB_WS_PORT_ENV || WS_PORT_FALLBACK });
   return new Promise((resolve, reject) => {
     const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
-    let timeoutId = null;
-    let closed = false;
-
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-      if (socket) {
-        try {
-          socket.close();
-        } catch (err) {
-          // Ignore close errors.
-        }
-      }
-    };
-
-    const finish = (err, data) => {
-      if (closed) return;
-      closed = true;
-      cleanup();
-      if (err) {
-        reject(err);
-      } else {
-        resolve(data);
-      }
-    };
-
-    timeoutId = setTimeout(() => {
-      finish(new Error("Hub nao encontrado."));
-    }, DISCOVERY_TIMEOUT_MS);
-
+    let timeoutId = null; let closed = false;
+    const cleanup = () => { if (timeoutId) clearTimeout(timeoutId); if (socket) { try { socket.close(); } catch (err) {} } };
+    const finish = (err, data) => { if (closed) return; closed = true; cleanup(); if (err) reject(err); else resolve(data); };
+    timeoutId = setTimeout(() => finish(new Error("Hub nao encontrado.")), DISCOVERY_TIMEOUT_MS);
     socket.on("message", (msg) => {
-      if (closed) return;
       const payload = msg.toString("utf8").trim();
-      let hubIp = null;
-      let wsPort = WS_PORT_FALLBACK;
-
-      try {
-        const data = JSON.parse(payload);
-        hubIp = data.hubIp;
-        wsPort = data.wsPort || WS_PORT_FALLBACK;
-      } catch (err) {
-        hubIp = payload;
-      }
-
-      if (!hubIp) {
-        finish(new Error("Resposta invalida do hub."));
-        return;
-      }
-
-      finish(null, { hubIp, wsPort });
+      let hubIp = null, wsPort = WS_PORT_FALLBACK;
+      try { const data = JSON.parse(payload); hubIp = data.hubIp; wsPort = data.wsPort || WS_PORT_FALLBACK; } 
+      catch (err) { hubIp = payload; }
+      if (!hubIp) finish(new Error("Resposta invalida do hub.")); else finish(null, { hubIp, wsPort });
     });
-
-    socket.on("error", (err) => {
-      finish(err);
-    });
-
+    socket.on("error", finish);
     socket.once("listening", () => {
       try {
         socket.setBroadcast(true);
         const message = Buffer.from(DISCOVER_SOURCE, "utf8");
-        socket.send(
-          message,
-          0,
-          message.length,
-          UDP_PORT_SOURCE,
-          "255.255.255.255",
-          (err) => {
-            if (err) {
-              finish(err);
-            }
-          }
-        );
-      } catch (err) {
-        finish(err);
-      }
+        socket.send(message, 0, message.length, UDP_PORT_SOURCE, "255.255.255.255", (err) => { if (err) finish(err); });
+      } catch (err) { finish(err); }
     });
-
     socket.bind(0, "0.0.0.0");
   });
 }
 
-function buildFfmpegArgs() {
-  const platform = PLATFORM_OVERRIDE || process.platform;
-
-  if (platform === "win32" || platform === "windows") {
-    if (!CAMERA_NAME) {
-      throw new Error("Set CAMERA_NAME with the DirectShow device name.");
-    }
-
-    return [
-      "-f",
-      "dshow",
-      "-video_size",
-      VIDEO_SIZE,
-      "-framerate",
-      FRAME_RATE,
-      "-i",
-      `video=${CAMERA_NAME}`,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "ultrafast",
-      "-tune",
-      "zerolatency",
-      "-profile:v", // <-- FORÇA O PERFIL SIMPLES
-      "baseline",   // <-- PARA COMPATIBILIDADE MOBILE
-      "-pix_fmt",   // <-- FORÇA O FORMATO DE CORES UNIVERSAL
-      "yuv420p",    // <-- QUE O SNAPDRAGON EXIGE
-      "-g",
-      `${GOP_SIZE}`,
-      "-keyint_min",
-      `${GOP_SIZE}`,
-      "-sc_threshold",
-      "0",
-      "-bf",
-      "0",
-      "-muxdelay",
-      "0",
-      "-muxpreload",
-      "0",
-      "-flush_packets",
-      "1",
-      "-f",
-      "mpegts",
-      "-",
-    ];
-  }
-
-  // === BLOCO DO LINUX / ODROID (Modo Pass-through / Peso Zero) ===
- return [
-    "-fflags", "nobuffer",
-    "-flags", "low_delay",
-    "-use_wallclock_as_timestamps", "1",
-    "-f", "v4l2",
-    "-input_format", "mjpeg",
-    "-video_size", VIDEO_SIZE,
-    "-framerate", FRAME_RATE,
-    "-i", VIDEO_DEVICE,
-    "-c:v", "copy",               // Mantém a CPU em 0%, enviando o MJPEG cru para o PC
-    "-f", "mjpeg",
-    "-",
-  ];
-}
-
-function startFfmpeg(onChunk) {
-  const args = buildFfmpegArgs();
-  const child = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-  child.stdout.on("data", (chunk) => {
-    onChunk(chunk);
-  });
-
-  child.stderr.on("data", (chunk) => {
-    const text = chunk.toString("utf8").trim();
-    if (text) {
-      console.log(`[ffmpeg] ${text}`);
-    }
-  });
-
-  return child;
-}
-
-function streamToHub({ hubIp, wsPort }) {
+function connectAndBridge({ hubIp, wsPort }) {
   return new Promise((resolve) => {
-    console.log(`Connecting to hub ws://${hubIp}:${wsPort}`);
+    console.log(`[REDE] Conectando ao Hub WS: ws://${hubIp}:${wsPort}`);
     const ws = new WebSocket(`ws://${hubIp}:${wsPort}`);
-    let ffmpeg = null;
-    let closed = false;
+    
+    let port;
+    try {
+      port = new SerialPort({ path: SERIAL_PATH, baudRate: BAUD_RATE });
+      console.log(`[SERIAL] Escutando o Arduino na porta ${SERIAL_PATH}`);
+    } catch (err) {
+      console.error(`[SERIAL ERRO] ${err.message}`);
+    }
 
     const cleanup = () => {
-      if (closed) return;
-      closed = true;
-      if (ffmpeg) {
-        try {
-          ffmpeg.kill("SIGINT");
-        } catch (err) {
-          // Ignore kill errors.
-        }
-      }
-      try {
-        ws.close();
-      } catch (err) {
-        // Ignore close errors.
-      }
+      if (port && port.isOpen) port.close();
+      if (ws.readyState === WebSocket.OPEN) ws.close();
       resolve();
     };
 
     ws.on("open", () => {
-      if (ws._socket && typeof ws._socket.setNoDelay === "function") {
-        ws._socket.setNoDelay(true);
-      }
-      ws.send(JSON.stringify({ role: "source" }));
-      try {
-        ffmpeg = startFfmpeg((chunk) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            if (ws.bufferedAmount > MAX_WS_BUFFER_BYTES) {
-              return;
-            }
-            ws.send(chunk, { binary: true });
+      // O tipo 'telemetry' avisa o hub que esta placa não envia vídeo, apenas dados
+      ws.send(JSON.stringify({ role: "source", type: "telemetry" }));
+    });
+
+    // 1. Receber Comandos do Hub (Admin) e enviar para o Arduino
+    ws.on("message", (data, isBinary) => {
+      if (!isBinary) {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.cmd === "START_RACE" && port && port.isOpen) {
+            console.log("[COMANDO] Iniciar nova corrida!");
+            port.write("S\n"); // Envia apenas um 'S' para o Arduino
           }
-        });
-      } catch (err) {
-        console.error(`FFmpeg start failed: ${err.message}`);
-        cleanup();
-        return;
+        } catch (e) { }
       }
+    });
 
-      ffmpeg.on("close", (code) => {
-        console.log(`FFmpeg exited with code ${code}`);
-        cleanup();
+    // 2. Ler Arduino e enviar para o Hub
+    if (port) {
+      const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+      parser.on('data', (linha) => {
+        console.log(`[ARDUINO] Leu: ${linha}`);
+        if (ws.readyState === WebSocket.OPEN) {
+            // Envia o dado via WS para o servidor
+            ws.send(JSON.stringify({ event: "arduino_data", payload: linha }));
+        }
       });
-    });
+      port.on('error', (err) => console.error(`[SERIAL ERRO] ${err.message}`));
+    }
 
-    ws.on("close", () => {
-      console.log("Hub connection closed.");
-      cleanup();
-    });
-
-    ws.on("error", (err) => {
-      console.error(`WebSocket error: ${err.message}`);
-      cleanup();
-    });
+    ws.on("close", () => { console.log("[REDE] Conexão com o Hub fechada."); cleanup(); });
+    ws.on("error", (err) => { console.error(`[REDE ERRO] ${err.message}`); cleanup(); });
   });
 }
 
@@ -266,15 +107,12 @@ async function run() {
   while (true) {
     try {
       const hubInfo = await discoverHub();
-      await streamToHub(hubInfo);
+      await connectAndBridge(hubInfo);
     } catch (err) {
-      console.error(`Source error: ${err.message}`);
+      console.error(`[ERRO] ${err.message}`);
     }
     await sleep(RETRY_DELAY_MS);
   }
 }
 
-run().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+run().catch(console.error);

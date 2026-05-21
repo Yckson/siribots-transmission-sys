@@ -1,12 +1,8 @@
 {
-  "name": "siribots-transmission-sys",
-  "private": true,
-  "version": "0.1.0",
-  "scripts": {
-    "source": "node source_agent.js"
-  },
   "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
     "dotenv": "^17.4.2",
-    "ws": "^8.18.0"
+    "serialport": "^13.0.0",
+    "ws": "^8.20.1"
   }
 }
