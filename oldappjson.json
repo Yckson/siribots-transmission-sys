@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Siribots",
+    "name": "Siribot",
     "slug": "siribots-viewer",
     "version": "0.1.0",
     "orientation": "default",
@@ -17,7 +17,8 @@
     "sdkVersion": "50.0.0",
     "jsEngine": "hermes",
     "android": {
-      "package": "com.coretech.siribots"
+      "package": "com.coretech.siribots",
+      "usesCleartextTraffic": true
     },
     "ios": {
       "bundleIdentifier": "com.coretech.siribots"
@@ -28,21 +29,12 @@
         {
           "backgroundColor": "#111827"
         }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesCleartextTraffic": true
-          }
-        }
       ]
     ],
     "extra": {
       "eas": {
-        "projectId": "8b0a47e9-7bf5-40d8-8b82-f9b9c1712e86"
+        "projectId": "7a67228b-e7e5-4162-b15d-128e871ccb88"
       }
-    },
-    "owner": "yckson_ufs"
+    }
   }
 }
