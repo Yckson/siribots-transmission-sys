@@ -20,6 +20,13 @@
     .schedule-list { margin-top: 12px; }
     .overlay-preview { margin-top: 10px; max-width: 320px; border-radius: 8px; border: 1px solid #ddd; }
     .muted { color: #777; font-size: 13px; }
+    
+    /* Animação de pulso para o indicador de corrida em andamento */
+    @keyframes pulse { 
+      0% { opacity: 1; } 
+      50% { opacity: 0.5; } 
+      100% { opacity: 1; } 
+    }
   </style>
 </head>
 <body>
@@ -40,6 +47,25 @@
         <button class="btn" id="save-meta">Salvar</button>
       </div>
       <div class="muted">O titulo e a descricao aparecem no visualizador em tempo real.</div>
+    </div>
+
+    <div class="section">
+      <h3>Controle da Corrida (Arduino)</h3>
+      <div class="status-box" style="background: #e9ecef; border-color: #dee2e6; color: #495057; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          Tempo Atual Registrado: <strong id="admin-race-time" style="font-size: 1.2em; color: #d35400;">00.000s</strong>
+        </div>
+        <!-- Etiqueta Visual de Corrida em Andamento -->
+        <div id="race-running-badge" style="display: none; background: #27ae60; color: white; padding: 4px 10px; border-radius: 4px; font-size: 0.9em; font-weight: bold; animation: pulse 1.5s infinite;">
+          🏃‍♂️ Em andamento...
+        </div>
+      </div>
+      <div style="display: flex; gap: 15px; align-items: center; margin-top: 15px;">
+        <button class="btn" id="start-race-btn" style="background: #e74c3c; margin-top: 0;">🏁 Iniciar Nova Corrida</button>
+        <label style="cursor: pointer;">
+          <input id="race-overlay-enabled" type="checkbox" /> Exibir tempo na tela
+        </label>
+      </div>
     </div>
 
     <div class="section">
@@ -197,6 +223,11 @@
     setInterval(fetchStatus, 2000);
     fetchStatus();
 
+    const startRaceBtn = document.getElementById('start-race-btn');
+    const raceOverlayCheckbox = document.getElementById('race-overlay-enabled');
+    const adminRaceTime = document.getElementById('admin-race-time');
+    const raceRunningBadge = document.getElementById('race-running-badge');
+
     async function connectWs() {
       const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
       const response = await fetch('/ui-config');
@@ -221,6 +252,19 @@
             overlayPreview.src = `/assets/${payload.config.overlay.filename}?v=${encodeURIComponent(payload.config.overlay.updatedAt || '')}`;
             overlayPreview.style.display = 'block';
           }
+          if (payload.race) {
+            // Lógica para esconder o badge quando chegar um tempo real
+            if (payload.race.time !== "00.000") {
+               adminRaceTime.textContent = payload.race.time + "s";
+               raceRunningBadge.style.display = "none";
+            } else {
+               // Apenas se o tempo for resetado e o badge não estiver aparecendo, atualiza pra 00.000s
+               if (raceRunningBadge.style.display === "none") {
+                 adminRaceTime.textContent = "00.000s";
+               }
+            }
+            raceOverlayCheckbox.checked = payload.race.showOverlay;
+          }
         }
       });
 
@@ -228,6 +272,30 @@
         setTimeout(connectWs, 1500);
       });
     }
+
+    startRaceBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/admin/api/race/start', { method: 'POST' });
+        const data = await res.json();
+        if(!data.ok) {
+          alert("Erro: " + data.error);
+        } else {
+          // Quando o servidor confirmar, mostra o badge e zera o tempo
+          raceRunningBadge.style.display = 'block';
+          adminRaceTime.textContent = '00.000s';
+        }
+      } catch (e) {
+        alert("Erro ao conectar com o Hub.");
+      }
+    });
+
+    raceOverlayCheckbox.addEventListener('change', async (e) => {
+      await fetch('/admin/api/race/overlay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: e.target.checked })
+      });
+    });
 
     connectWs();
   </script>

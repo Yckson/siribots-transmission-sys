@@ -68,6 +68,23 @@
     .player-wrap:fullscreen video { width: 100%; height: 100%; object-fit: contain; }
     .player-wrap:-webkit-full-screen { width: 100vw; height: 100vh; border-radius: 0; }
     .player-wrap:-webkit-full-screen video { width: 100%; height: 100%; object-fit: contain; }
+
+    .race-timer-overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 40;
+      background: rgba(0, 0, 0, 0.75);
+      border-left: 4px solid var(--primary);
+      padding: 10px 20px;
+      border-radius: 8px;
+      backdrop-filter: blur(4px);
+      display: flex;
+      flex-direction: column;
+      transition: opacity 0.3s;
+    }
+    .race-timer-overlay .lbl { color: var(--primary); font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;}
+    .race-timer-overlay .val { color: white; font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -93,6 +110,10 @@
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
           </svg>
         </button>
+        <div id="race-timer-ui" class="race-timer-overlay" style="display: none;">
+          <span class="lbl">Tempo Final</span>
+          <span class="val" id="race-timer-val">00.000s</span>
+        </div>
       </div>
       <div id="stream-title" class="title">Transmissao do Robo</div>
       <div id="stream-desc" class="meta">Sinal direto da base Siribots</div>
@@ -223,6 +244,14 @@
           applyOverlay(payload.config?.overlay);
           applyMeta(payload.config?.meta);
           updateStatus(payload.status);
+
+          const timerUi = document.getElementById('race-timer-ui');
+          const timerVal = document.getElementById('race-timer-val');
+          
+          if (payload.race) {
+              timerUi.style.display = payload.race.showOverlay ? 'flex' : 'none';
+              timerVal.textContent = payload.race.time + "s";
+          }
         }
       });
 

@@ -5,6 +5,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const DISCOVER_SOURCE = "DISCOVER_HUB_SOURCE";
@@ -159,17 +160,31 @@ const app = express();
 app.use(express.json({ limit: "5mb" }));
 
 let appConfig = loadConfig();
+// Novo estado para a corrida
+let raceState = {
+  time: "00.000",
+  showOverlay: false
+};
+
+// --- CREDENCIAIS E SESSÃO ---
+const ADMIN_USER = process.env.ADMIN_USER || "admin";
+const ADMIN_PASS = process.env.ADMIN_PASS || "admin";
+// Token gerado aleatoriamente ao iniciar o servidor. Invalida sessões antigas ao reiniciar.
+const SESSION_TOKEN = crypto.randomBytes(32).toString('hex');
 
 // --- MIDDLEWARES ---
-// Middleware de Segurança: Bloqueia acesso à rota de admin para IPs externos
+// Middleware de Segurança: Protege a rota através do cookie de sessão
 function adminOnly(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  // Express lida com IPv4 mapeado em IPv6 (::ffff:127.0.0.1) ou localhost puro
-  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
+  const cookieHeader = req.headers.cookie || "";
+  if (cookieHeader.includes(`admin_session=${SESSION_TOKEN}`)) {
     next();
   } else {
-    console.log(`Tentativa de acesso bloqueada ao /admin vinda de ${ip}`);
-    res.status(403).send("<h1>403 Proibido</h1><p>A área de administração só pode ser acessada pelo computador local (Hub).</p>");
+    // Se for uma requisição direta pelo navegador (GET), redireciona para o login
+    if (req.method === "GET") {
+      res.redirect("/login");
+    } else {
+      res.status(401).json({ ok: false, error: "Não autorizado. Inicie sessão novamente." });
+    }
   }
 }
 
@@ -188,11 +203,33 @@ app.get("/generate", (req, res) => {
   sendPublicFile(res, "generator.html");
 });
 
+// Rota da Página de Login
+app.get("/login", (req, res) => {
+  sendPublicFile(res, "login.html");
+});
+
 app.use('/libs', express.static(path.join(__dirname, 'libs')));
 
-// Rota 2: Página de Admin (Restrita ao Localhost)
+// Rota 2: Página de Admin (Agora protegida por login na rede)
 app.get("/admin", adminOnly, (req, res) => {
   sendPublicFile(res, "admin.html");
+});
+
+// --- ROTAS DE AUTENTICAÇÃO ---
+app.post("/api/login", (req, res) => {
+  const { username, password } = req.body;
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    // Cria o cookie que dura 24 horas
+    res.cookie("admin_session", SESSION_TOKEN, { httpOnly: true, maxAge: 24 * 60 * 60 * 1000 });
+    res.json({ ok: true });
+  } else {
+    res.status(401).json({ ok: false, error: "Utilizador ou palavra-passe incorretos" });
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  res.clearCookie("admin_session");
+  res.json({ ok: true });
 });
 
 // --- FIM ROTAS WEB ---
@@ -248,7 +285,8 @@ function ensureWaitingSegment() {
 function getStreamStatus() {
   const now = Date.now();
   const sourceStale = now - lastSourceFrameAt > WAITING_TIMEOUT_MS;
-  return Boolean(activeSource) && !sourceStale ? "live" : "waiting";
+  // O status "ao vivo" depende agora APENAS da placa de vídeo
+  return Boolean(activeVideoSource) && !sourceStale ? "live" : "waiting";
 }
 
 app.get("/status", (req, res) => {
@@ -310,6 +348,30 @@ app.post("/admin/api/overlay", adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+// --- ROTAS DA CORRIDA ---
+app.post("/admin/api/race/start", adminOnly, (req, res) => {
+  // Agora validamos a source de telemetria
+  if (activeTelemetrySource && activeTelemetrySource.readyState === WebSocket.OPEN) {
+    // Envia o comando para a Odroid
+    activeTelemetrySource.send(JSON.stringify({ cmd: "START_RACE" }));
+    
+    // Zera o tempo no painel e no visualizador imediatamente
+    raceState.time = "00.000";
+    broadcastState();
+    
+    res.json({ ok: true, message: "Comando enviado ao Arduino" });
+  } else {
+    res.status(400).json({ ok: false, error: "A placa Odroid (Telemetria) não está ligada" });
+  }
+});
+
+app.post("/admin/api/race/overlay", adminOnly, (req, res) => {
+  raceState.showOverlay = Boolean(req.body.enabled);
+  broadcastState();
+  res.json({ ok: true });
+});
+// --- FIM ROTAS DA CORRIDA ---
+
 app.get(`/${HLS_PLAYLIST}`, (req, res) => {
   const playlistPath = path.join(HLS_DIR, HLS_PLAYLIST);
   if (fs.existsSync(playlistPath)) {
@@ -354,18 +416,21 @@ app.use("/assets", express.static(ASSETS_DIR));
 const httpServer = app.listen(HTTP_PORT, "0.0.0.0", () => {
   console.log(`Servidor Web/HLS iniciado na porta :${HTTP_PORT}`);
   console.log(`-> Painel do Robô: http://localhost:${HTTP_PORT}`);
-  console.log(`-> Admin (Restrito): http://127.0.0.1:${HTTP_PORT}/admin`);
+  console.log(`-> Admin (Protegido por Login): http://localhost:${HTTP_PORT}/admin`);
 });
 
 const wss = new WebSocket.Server({ port: WS_PORT }, () => {
-  console.log(`WebSocket server apenas para Fonte iniciado na porta :${WS_PORT}`);
+  console.log(`WebSocket server apenas para Fontes iniciado na porta :${WS_PORT}`);
 });
 
 const uiWss = new WebSocket.Server({ port: UI_WS_PORT }, () => {
   console.log(`WebSocket server UI iniciado na porta :${UI_WS_PORT}`);
 });
 
-let activeSource = null;
+// AS DUAS VARIÁVEIS SEPARADAS AQUI:
+let activeVideoSource = null;
+let activeTelemetrySource = null;
+
 let lastSourceFrameAt = 0;
 let ffmpegProcess = null;
 let lastBroadcastStatus = "unknown";
@@ -375,6 +440,7 @@ function buildStatePayload() {
     type: "state",
     status: getStreamStatus(),
     config: appConfig,
+    race: raceState,
   };
 }
 
@@ -454,7 +520,8 @@ function stopFfmpeg() {
 setInterval(() => {
   const now = Date.now();
   const sourceStale = now - lastSourceFrameAt > WAITING_TIMEOUT_MS;
-  if (!activeSource || sourceStale) {
+  // Apenas a fonte de VÍDEO afeta o FFmpeg
+  if (!activeVideoSource || sourceStale) {
     stopFfmpeg();
   }
 
@@ -480,7 +547,7 @@ wss.on("connection", (ws, req) => {
   console.log(`[${new Date().toISOString()}] Nova tentativa de conexão WS vinda de ${remote}`);
 
   ws.on("message", (data, isBinary) => {
-    // Se for texto (handshake)
+    // Se for texto (handshake ou dados da telemetria)
     if (!isBinary) {
       let payload;
       try {
@@ -491,13 +558,36 @@ wss.on("connection", (ws, req) => {
       }
 
       if (payload?.role === "source") {
-        if (activeSource && activeSource !== ws) {
-          activeSource.close(1012, "Replaced by new source");
+        const isTelemetry = payload.type === "telemetry";
+
+        if (isTelemetry) {
+          // Acomoda na cadeira de Telemetria
+          if (activeTelemetrySource && activeTelemetrySource !== ws) {
+            activeTelemetrySource.close(1012, "Replaced by new telemetry source");
+          }
+          activeTelemetrySource = ws;
+          console.log(`[${new Date().toISOString()}] 🏎️ Placa TELEMETRIA (Odroid/Arduino) autorizada a partir de ${remote}`);
+        } else {
+          // Acomoda na cadeira de Vídeo
+          if (activeVideoSource && activeVideoSource !== ws) {
+            activeVideoSource.close(1012, "Replaced by new video source");
+          }
+          activeVideoSource = ws;
+          lastSourceFrameAt = Date.now();
+          console.log(`[${new Date().toISOString()}] 🎥 Placa VÍDEO autorizada a transmitir a partir de ${remote}`);
         }
-        activeSource = ws;
-        lastSourceFrameAt = Date.now();
-        console.log(`[${new Date().toISOString()}] ✅ Placa FONTE (Odroid) autorizada a transmitir a partir de ${remote}`);
         return;
+      }
+
+      if (payload?.event === "arduino_data") {
+         const linha = payload.payload;
+         // Se o Arduino enviou "T:15.340"
+         if (linha.startsWith("T:")) {
+             raceState.time = linha.substring(2);
+             console.log(`[CORRIDA] Tempo final recebido: ${raceState.time}s`);
+             broadcastState(); // Atualiza a UI imediatamente
+         }
+         return;
       }
 
       // Rejeita qualquer viewer pelo WebSocket
@@ -511,8 +601,8 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // Se for binário, é o vídeo chegando da Odroid
-    if (ws === activeSource && isBinary) {
+    // Se for binário, verificamos estritamente a fonte de vídeo
+    if (ws === activeVideoSource && isBinary) {
       lastSourceFrameAt = Date.now();
       startFfmpeg();
       if (ffmpegProcess?.stdin?.writable) {
@@ -525,10 +615,15 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    if (activeSource === ws) {
-      activeSource = null;
+    // Verifica qual das placas se desligou
+    if (activeVideoSource === ws) {
+      activeVideoSource = null;
       stopFfmpeg();
-      console.log(`[${new Date().toISOString()}] 🔌 Fonte desconectada de ${remote}`);
+      console.log(`[${new Date().toISOString()}] 🔌 Fonte de VÍDEO desconectada de ${remote}`);
+    }
+    if (activeTelemetrySource === ws) {
+      activeTelemetrySource = null;
+      console.log(`[${new Date().toISOString()}] 🔌 Fonte de TELEMETRIA (Arduino) desconectada de ${remote}`);
     }
   });
 });
